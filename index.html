@@ -521,17 +521,14 @@ function assignFood(){
   for(var d=0;d<state.ducks.length;d++){
     dk=state.ducks[d];
     if(dk.state==='eat'||dk.state==='happy') continue;
-    if(dk.targetPellet && pellets.indexOf(dk.targetPellet)>=0){
-      dk.targetPellet.claims++; dk.state='seek'; continue;
-    }
     var best=null,bestScore=Infinity,bestDist=0;
     for(i=0;i<pellets.length;i++){
       var pe=pellets[i];
       var dd=Math.hypot(pe.x-dk.x,pe.y-dk.y);
-      var score=dd+pe.claims*(0.6*minS);
+      var score=dd+pe.claims*(0.1*minS); // Assuming you changed the 0.6 to 0.1 here!
       if(score<bestScore){ bestScore=score; best=pe; bestDist=dd; }
     }
-    if(best && best.claims>=3 && bestDist>0.22*minS) best=null;
+    if(best && best.claims>=4 && bestDist>0.22*minS) best=null;
     if(best){ best.claims++; dk.targetPellet=best; dk.state='seek'; }
     else { dk.targetPellet=null; if(dk.state==='seek') dk.pickWander(); }
   }
