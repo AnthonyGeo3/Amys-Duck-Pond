@@ -531,7 +531,7 @@ function assignFood(){
       var score=dd+pe.claims*(0.6*minS);
       if(score<bestScore){ bestScore=score; best=pe; bestDist=dd; }
     }
-    if(best && best.claims>=2 && bestDist>0.22*minS) best=null;
+    if(best && best.claims>=3 && bestDist>0.22*minS) best=null;
     if(best){ best.claims++; dk.targetPellet=best; dk.state='seek'; }
     else { dk.targetPellet=null; if(dk.state==='seek') dk.pickWander(); }
   }
