@@ -482,14 +482,15 @@ function initReeds(){
     state.reeds.push({x:shoreX(y)+rand(-5,3),y:y,h:(28+Math.random()*30)*depthScale(y),phase:rand(0,6.283),lean:rand(-0.2,0.2),hasCattail:Math.random()<0.6});
   }
 }
+var DUCK_COUNT=8;   // <-- number of ducks. Change this to add or remove ducks.
 function initDucks(){
   state.ducks=[];
-  var spots=[[0.68,0.5],[0.83,0.78],[0.2,0.62],[0.55,0.9]];
-  var sizes=[1.0,0.92,1.06,0.9];
-  for(var i=0;i<4;i++){
-    var x=clamp(W*spots[i][0],30,W-30);
-    var y=clamp(groundTop+(H-groundTop)*spots[i][1],groundTop+30,H-30);
-    state.ducks.push(new Duck({x:x,y:y,pal:PALS[i],size:sizes[i],seed:rand(0,6.283)}));
+  for(var i=0;i<DUCK_COUNT;i++){
+    // even, non-gridded scatter using a golden-ratio sequence; colours cycle through PALS
+    var x=clamp(W*(0.12+0.76*((i*0.618033+0.21)%1)),30,W-30);
+    var y=clamp(groundTop+(H-groundTop)*(0.30+0.62*((i*0.381966+0.13)%1)),groundTop+30,H-30);
+    var size=0.88+((i*0.27+0.1)%1)*0.22;
+    state.ducks.push(new Duck({x:x,y:y,pal:PALS[i%PALS.length],size:size,seed:rand(0,6.283)}));
   }
 }
 
