@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Little Duck Pond</title>
+<meta name="theme-color" content="#bfe0dc">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Duck Pond">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -725,6 +733,8 @@ var audio=(function(){
     var AC=window.AudioContext||window.webkitAudioContext;
     if(!AC) return;
     try{ actx=new AC(); master=actx.createGain(); master.gain.value=0.0; master.connect(actx.destination); }catch(e){ actx=null; }
+    // iOS: ask for the 'playback' session so sound isn't muted by the ring/silent switch
+    try{ if(navigator.audioSession) navigator.audioSession.type='playback'; }catch(e){}
   }
   function startAmbient(){
     if(!actx||started) return; started=true;
@@ -840,6 +850,9 @@ var audio=(function(){
     try{
       if(on){
         if(actx.state==='suspended') actx.resume();
+        // iOS: a 1-sample silent buffer played inside the tap reliably unlocks the audio engine
+        try{ var ub=actx.createBuffer(1,1,22050), us=actx.createBufferSource(); us.buffer=ub; us.connect(actx.destination); us.start(0); }catch(e){}
+        try{ if(navigator.audioSession) navigator.audioSession.type='playback'; }catch(e){}
         startAmbient();
         master.gain.cancelScheduledValues(actx.currentTime);
         master.gain.linearRampToValueAtTime(0.5,actx.currentTime+0.6);
@@ -918,6 +931,14 @@ requestAnimationFrame(frame);
 requestAnimationFrame(function(){ canvas.classList.add('show'); });
 
 })();
+</script>
+<script>
+// Register the service worker so the pond can be installed to the home screen and work offline.
+if('serviceWorker' in navigator){
+  window.addEventListener('load',function(){
+    navigator.serviceWorker.register('sw.js').catch(function(){});
+  });
+}
 </script>
 </body>
 </html>
