@@ -406,6 +406,13 @@ Duck.prototype.update=function(dt){
     var ax=this.x-fp2.x, ay=this.y-fp2.y, al=Math.hypot(ax,ay)||1;
     tx=clamp(this.x+ax/al*60,16,W-16); ty=clamp(this.y+ay/al*60,groundTop+16,H-16); maxSpeed=RUN*0.92;
   }
+  else if(this.state==='spooked'){
+    // a quick startled scoot away from a point (e.g. the dog's splash), then back to normal — self-resetting
+    this.shyT-=dt;
+    var spx=this.scootX, spy=this.scootY, sax=this.x-spx, say=this.y-spy, sal=Math.hypot(sax,say)||1;
+    tx=clamp(this.x+sax/sal*70,16,W-16); ty=clamp(this.y+say/sal*70,groundTop+16,H-16); maxSpeed=RUN*0.85;
+    if(this.shyT<=0) this.pickIdle();
+  }
   else if(this.state==='mimic'){
     // line up at the water's edge near the stork, copying its fishing
     var sv=state.visitor, baseY=(sv&&sv.landY)||this.y, k=this.mimicSlot||0;
@@ -845,6 +852,7 @@ function spawnHeart(x,y){ state.particles.push({type:'heart',x:x,y:y,vx:rand(-8,
 function spawnTap(x,y){ state.particles.push({type:'ring',x:x,y:y,maxR:22,t:0,life:0.5}); }
 function spawnRipple(x,y,maxR){ if(state.ripples.length>60) state.ripples.shift(); state.ripples.push({x:x,y:y,maxR:maxR,r:2,t:0,life:1.1}); }
 function spawnZzz(x,y,dir){ state.particles.push({type:'zzz',x:x,y:y,vx:(dir||1)*rand(4,9),vy:rand(-24,-16),s:rand(9,14),t:0,life:rand(1.9,2.6)}); }
+function spawnDrop(x,y,vx,vy){ if(state.particles.length>240) return; state.particles.push({type:'drop',x:x,y:y,vx:vx,vy:vy,r:rand(1.2,2.1),t:0,life:rand(0.7,1.25)}); }   // elephant's spray
 
 // ---------- food assignment ----------
 function assignFood(){
@@ -887,6 +895,8 @@ function updateParticles(dt){
     if(p.type==='crumb'){ p.vy+=g*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; }
     else if(p.type==='heart'){ p.y+=p.vy*dt; p.vy+=10*dt; p.x+=p.vx*dt; }
     else if(p.type==='zzz'){ p.y+=p.vy*dt; p.x+=p.vx*dt; }
+    else if(p.type==='drop'){ p.vy+=g*dt; p.x+=p.vx*dt; p.y+=p.vy*dt;
+      if(p.life-p.t<dt && isWater(p.x,p.y)) spawnRipple(p.x,p.y,8); }   // little plip where rain lands on the pond
     if(p.t>=p.life) state.particles.splice(i,1);
   }
 }
@@ -945,6 +955,12 @@ function spookFlock(cat){ // a pounce just landed: send every duck scarpering in
     d.panicAng=away+rand(-1.7,1.7); d.panicT=rand(1.3,2.4); // wide, dramatic, all-directions
   }
 }
+function scootDucks(x,y,radius){ // a gentle, local startle (e.g. the dog's splash): nearby ducks scoot off briefly, then carry on
+  for(var i=0;i<state.ducks.length;i++){ var d=state.ducks[i];
+    if(d.state!=='wander'&&d.state!=='pause'&&d.state!=='peck'&&d.state!=='seek') continue;
+    if(Math.hypot(d.x-x,d.y-y)<radius){ d.state='spooked'; d.scootX=x; d.scootY=y; d.shyT=rand(0.5,1.0); d.targetPellet=null; }
+  }
+}
 
 // Registry of visitor makers. Add new animals here; one is picked at random per visit.
 // Each visitor has a display name (for the shop) and a maker. Add new animals here and they
@@ -959,7 +975,9 @@ var VISITORS=[
   { id:'giraffe', name:'Giraffe',  make:function(){ return new Giraffe(); } },
   { id:'otters', name:'Otters',    make:function(){ return new Otters(); } },
   { id:'penguin', name:'Penguin',  make:function(){ return new Penguin(); } },
-  { id:'shark', name:'Shark',      make:function(){ return new Shark(); } }
+  { id:'shark', name:'Shark',      make:function(){ return new Shark(); } },
+  { id:'elephant', name:'Elephant', make:function(){ return new Elephant(); } },
+  { id:'dog', name:'Dog',          make:function(){ return new Dog(); } }
 ];
 function visitorById(id){ for(var i=0;i<VISITORS.length;i++) if(VISITORS[i].id===id) return VISITORS[i]; return null; }
 function unlockedVisitors(){ var r=[]; for(var i=0;i<VISITORS.length;i++) if(state.unlocked&&state.unlocked[VISITORS[i].id]) r.push(VISITORS[i]); return r; }
@@ -1076,12 +1094,26 @@ function manageVisitor(dt){
         }
         if(pick && Math.random()<dt*0.8){ pick.state='toGiraffe'; pick.targetPellet=null; gir.rider=pick; gir.approachT=14; }
       }
+    } else if(state.visitor.delights){
+      // Elephant's shower: while it sprays, nearby ducks drift under the rain and flap about happily.
+      var el=state.visitor;
+      if(el.state==='spray'){
+        state.sleeping=false; var rs=el.rainSpot;
+        for(var ei=0;ei<state.ducks.length;ei++){ var ed=state.ducks[ei];
+          if(ed.state==='happy') continue;
+          var edd=Math.hypot(ed.x-rs.x,ed.y-rs.y);
+          if(edd<210 && (ed.state==='wander'||ed.state==='pause'||ed.state==='peck'||ed.state==='seek')){
+            if(edd>40 && Math.random()<dt*0.7){ ed.state='wander'; ed.tx=clamp(rs.x+rand(-34,34),18,W-18); ed.ty=clamp(rs.y+rand(-26,26),groundTop+18,H-18); ed.targetPellet=null; }  // come dance in the rain
+            else if(Math.random()<dt*0.5){ ed.startHappy(); }   // splash and flap with little hearts
+          }
+        }
+      }
     }
     if(state.visitor.done){
       var wasReact=state.visitor.spooks||state.visitor.befriends;
       if(state.dfChaser){ state.dfChaser.pickIdle(); }
       if(state.frogChaser){ state.frogChaser.pickIdle(); }
-      for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic'||state.ducks[mj].state==='ride'||state.ducks[mj].state==='toGiraffe') state.ducks[mj].pickIdle();
+      for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic'||state.ducks[mj].state==='ride'||state.ducks[mj].state==='toGiraffe'||state.ducks[mj].state==='spooked') state.ducks[mj].pickIdle();
       state.giraffeMount=null;
       state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null;
       if(wasReact){ for(var j=0;j<state.ducks.length;j++){ state.ducks[j].pickIdle(); state.ducks[j].friendDecided=false; } state.lastFeed=state.time; rollSleepDelay(); }
@@ -1336,6 +1368,106 @@ Shark.prototype.update=function(dt){
     this.sink+=dt*0.4; if(this.sink>=1) this.done=true;            // slips back under and is gone
   }
   this.y=clamp(this.y,groundTop+22,H-20);
+};
+
+// ----- Elephant: ambles to the shore, dips its trunk and sprays the water up — it rains down and the ducks love it -----
+var ELE_S=0.95;
+function Elephant(){
+  this.kind='elephant'; this.spooks=false; this.delights=true; this.done=false;
+  this.life=rand(32,48); this.lifeT=0;
+  this.y=clamp(groundTop+(H-groundTop)*rand(0.45,0.82),groundTop+90,H-50);
+  this.x=W+60; this.facing=-1; this.vx=0; this.vy=0; this.speed=0; this.walkPhase=0;
+  this.state='enter'; this.stateT=0; this.stateDur=0;
+  this.tp=0.5; this.tpTarget=0.5;                 // trunk pose: 0 = dipped to the water, 1 = raised to spray
+  this.blink=0; this.blinkT=rand(2,5); this.earFlap=rand(0,6.283); this.sprayT=0; this.dipRipT=0;
+  this.tx=clamp(shoreX(this.y)+38,70,W-30); this.ty=this.y;          // staging spot on the grass right by the shore
+  this.rainSpot={ x:clamp(this.x+this.facing*80,16,W), y:this.y };
+}
+Elephant.prototype.trunkTip=function(){
+  var s=depthScale(this.y)*ELE_S, lx=lerp(52,60,this.tp), ly=lerp(-4,-74,this.tp);
+  return { x:this.x+this.facing*lx*s, y:this.y+ly*s };
+};
+Elephant.prototype.update=function(dt){
+  this.stateT+=dt; this.lifeT+=dt; this.earFlap+=dt*2.2;
+  this.tp+=(this.tpTarget-this.tp)*Math.min(1,dt*3.2);
+  var maxSpeed=0;
+  if(this.state==='enter'){ maxSpeed=50;
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<14){ this.state='settle'; this.stateT=0; this.facing=-1; this.tpTarget=0.5; }
+  } else if(this.state==='settle'){ maxSpeed=0; this.facing=-1;
+    if(this.stateT>0.6){ this.state='dip'; this.stateT=0; this.tpTarget=0; }
+  } else if(this.state==='dip'){ maxSpeed=0; this.tpTarget=0;        // lower trunk into the pond and draw water up
+    if(this.tp<0.14){ var tip=this.trunkTip(); this.dipRipT-=dt; if(this.dipRipT<=0){ spawnRipple(tip.x,tip.y,10); this.dipRipT=0.28; }
+      if(this.stateT>1.1){ this.state='raise'; this.stateT=0; this.tpTarget=1; } }
+  } else if(this.state==='raise'){ maxSpeed=0; this.tpTarget=1;
+    if(this.tp>0.88){ this.state='spray'; this.stateT=0; this.rainSpot={ x:clamp(this.x+this.facing*80,16,W), y:clamp(this.y+rand(-12,18),groundTop+30,H-30) }; }
+  } else if(this.state==='spray'){ maxSpeed=0; this.tpTarget=1;      // fling it up — it arcs over and rains down
+    var tip2=this.trunkTip(); this.sprayT-=dt;
+    if(this.sprayT<=0){ for(var k=0;k<3;k++) spawnDrop(tip2.x+rand(-3,3), tip2.y+rand(-3,3), this.facing*rand(45,120), rand(-255,-175)); this.sprayT=0.045; }
+    if(this.stateT>1.5){ this.state='rest'; this.stateT=0; this.tpTarget=0.5; }
+  } else if(this.state==='rest'){ maxSpeed=0; this.tpTarget=0.5;
+    if(this.stateT>1.0){ if(this.lifeT>this.life){ this.state='leave'; this.stateT=0; this.tx=W+80; this.ty=this.y; } else { this.state='dip'; this.stateT=0; this.tpTarget=0; } }
+  } else if(this.state==='leave'){ maxSpeed=52; this.tpTarget=0.5; if(this.x>W+60) this.done=true; }
+  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1, desVx=0,desVy=0;
+  if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
+  var steer=Math.min(1,dt*4); this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  this.x+=this.vx*dt; this.y+=this.vy*dt;
+  if(this.state!=='leave'){ var edge=landX(this.y,14); if(this.x<edge){ this.x=edge; this.vx+=8; } }   // stay on the grass
+  this.y=clamp(this.y,groundTop+40,H-26);
+  this.speed=Math.hypot(this.vx,this.vy);
+  if(Math.abs(this.vx)>5) this.facing=this.vx>0?1:-1;
+  this.walkPhase+=dt*(2.4+this.speed*0.08);
+  this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(2.2,5); }
+};
+
+// ----- Dog: bounds in, does grass zoomies, splashes in the shallows, then shakes the water off -----
+var DOG_S=1.0;
+function Dog(){
+  this.kind='dog'; this.spooks=false; this.done=false;
+  this.facing=-1; this.vx=0; this.vy=0; this.speed=0; this.walkPhase=rand(0,6.283); this.hop=0;
+  this.y=clamp(groundTop+(H-groundTop)*rand(0.4,0.82),groundTop+60,H-46);
+  this.x=W+40;
+  this.state='enter'; this.stateT=0; this.stateDur=0; this.lifeT=0; this.life=rand(26,40);
+  this.tailWag=rand(0,6.283); this.shake=0; this.shakeBurst=false; this.splashT=0; this.plays=0; this.tongue=0;
+  this.tx=clamp(W*rand(0.45,0.75),60,W-30); this.ty=this.y;
+}
+Dog.prototype.grassPt=function(){ var y=clamp(this.y+rand(-90,90),groundTop+46,H-40), lo=landX(y,24); return { x:clamp(rand(lo,W-26),lo,W-26), y:y }; };
+Dog.prototype.shorePt=function(){ var y=clamp(this.y+rand(-70,70),groundTop+40,H-30); return { x:clamp(shoreX(y)-rand(8,26),14,W), y:y }; };
+Dog.prototype.update=function(dt){
+  this.stateT+=dt; this.lifeT+=dt; this.tailWag+=dt*14;
+  this.tongue+=(((this.state==='play'||this.state==='enter')?1:0)-this.tongue)*Math.min(1,dt*6);
+  var maxSpeed=0;
+  if(this.state==='enter'){ maxSpeed=120;
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<16){ this.state='play'; this.stateT=0; this.plays=0; var g=this.grassPt(); this.tx=g.x; this.ty=g.y; }
+  } else if(this.state==='play'){ maxSpeed=104;          // grass zoomies
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<16){ this.plays++;
+      if(this.plays>=3){ var sp=this.shorePt(); this.tx=sp.x; this.ty=sp.y; this.state='toWater'; this.stateT=0; }
+      else if(Math.random()<0.4){ this.state='bow'; this.stateT=0; this.stateDur=rand(0.5,1.0); }    // play-bow
+      else { var g2=this.grassPt(); this.tx=g2.x; this.ty=g2.y; }
+    }
+  } else if(this.state==='bow'){ maxSpeed=0; if(this.stateT>this.stateDur){ var g3=this.grassPt(); this.tx=g3.x; this.ty=g3.y; this.state='play'; this.stateT=0; } }
+  else if(this.state==='toWater'){ maxSpeed=110;
+    if(isWater(this.x,this.y) || Math.hypot(this.tx-this.x,this.ty-this.y)<14){ this.state='splash'; this.stateT=0; this.splashT=0; scootDucks(this.x,this.y,120); }
+  } else if(this.state==='splash'){ maxSpeed=10;          // bouncy splashing in the shallows
+    this.splashT-=dt; if(this.splashT<=0){ for(var k=0;k<3;k++) spawnDrop(this.x+rand(-6,6),this.y-6,this.facing*rand(-30,80),rand(-155,-85)); spawnRipple(this.x,this.y+2,15); this.splashT=0.08; }
+    if(this.stateT>1.2){ var w=this.grassPt(); this.tx=clamp(landX(w.y,28),60,W-30); this.ty=w.y; this.state='comeOut'; this.stateT=0; }
+  } else if(this.state==='comeOut'){ maxSpeed=96;
+    if(!isWater(this.x,this.y) && Math.hypot(this.tx-this.x,this.ty-this.y)<18){ this.state='shake'; this.stateT=0; this.shakeBurst=false; }
+  } else if(this.state==='shake'){ maxSpeed=0; this.shake=Math.sin(this.stateT*42);   // the big shake-off
+    if(!this.shakeBurst && this.stateT>0.12){ this.shakeBurst=true; for(var sdr=0;sdr<16;sdr++){ var a=rand(0,Math.PI*2); spawnDrop(this.x+Math.cos(a)*10,this.y-14+Math.sin(a)*8,Math.cos(a)*rand(45,120),rand(-120,-30)+Math.sin(a)*55); } }
+    if(this.stateT>0.9){ this.shake=0;
+      if(this.lifeT>this.life){ this.state='leave'; this.tx=W+70; this.ty=this.y; }
+      else { this.state='play'; this.stateT=0; this.plays=0; var g4=this.grassPt(); this.tx=g4.x; this.ty=g4.y; } }
+  } else if(this.state==='leave'){ maxSpeed=120; if(this.x>W+50) this.done=true; }
+  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1, desVx=0,desVy=0;
+  if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
+  var steer=Math.min(1,dt*6); this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  this.x+=this.vx*dt; this.y+=this.vy*dt;
+  if(this.state!=='splash'&&this.state!=='toWater'&&this.state!=='leave'){ var edge=landX(this.y,8); if(this.x<edge){ this.x=edge; this.vx+=10; } }   // keep on the grass except the dip
+  this.x=clamp(this.x,12,W+80); this.y=clamp(this.y,groundTop+22,H-18);
+  this.speed=Math.hypot(this.vx,this.vy);
+  if(Math.abs(this.vx)>6) this.facing=this.vx>0?1:-1;
+  this.walkPhase+=dt*(6+this.speed*0.10);
+  this.hop=(this.state==='splash')?Math.abs(Math.sin(this.stateT*18))*3:Math.abs(Math.sin(this.walkPhase))*Math.min(1,this.speed/90)*4;
 };
 
 // ----- Red panda: ambles around the grass; nearby ducks toddle over to be near their friend -----
@@ -1718,7 +1850,7 @@ function drawReed(g,rd){
     g.strokeStyle='#5f923c'; g.lineWidth=1; g.beginPath(); g.moveTo(tx,ty); g.lineTo(tx+sway*0.08,ty-rd.h*0.14); g.stroke();
   }
 }
-function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); else if(v.kind==='giraffe') drawGiraffe(g,v); else if(v.kind==='otters') drawOtters(g,v); else if(v.kind==='penguin') drawPenguin(g,v); else if(v.kind==='shark') drawShark(g,v); }
+function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); else if(v.kind==='giraffe') drawGiraffe(g,v); else if(v.kind==='otters') drawOtters(g,v); else if(v.kind==='penguin') drawPenguin(g,v); else if(v.kind==='shark') drawShark(g,v); else if(v.kind==='elephant') drawElephant(g,v); else if(v.kind==='dog') drawDog(g,v); }
 function drawFrogFamily(g,fam){
   var all=fam.babies.concat([fam.parent]); all.sort(function(a,b){return a.y-b.y;});
   for(var i=0;i<all.length;i++) drawFrog(g,all[i]);
@@ -2157,6 +2289,70 @@ function drawShark(g,sh){
   }
   g.restore();
 }
+function elephantTrunk(g,tp,col){
+  var Bx=44,By=-44, Tx=lerp(52,60,tp),Ty=lerp(-4,-74,tp), Cx=lerp(56,58,tp),Cy=lerp(-20,-50,tp), N=11;
+  g.fillStyle=col;
+  for(var i=0;i<=N;i++){ var t=i/N, mt=1-t;
+    var x=mt*mt*Bx+2*mt*t*Cx+t*t*Tx, y=mt*mt*By+2*mt*t*Cy+t*t*Ty, w=lerp(7,2.3,t);
+    g.beginPath(); g.ellipse(x,y,w,w,0,0,Math.PI*2); g.fill();
+  }
+}
+function drawElephant(g,p){
+  var ds=depthScale(p.y), s=ds*ELE_S;
+  var C={skin:'#9aa1a8',skinD:'#7d848c',belly:'#abb1b7',ear:'#888f95',earIn:'#a8aeb4',tusk:'#f4eeda',eye:'#2a2622',nail:'#e2e5e7'};
+  g.save(); g.translate(p.x,p.y);
+  g.fillStyle='rgba(45,55,45,0.16)'; g.beginPath(); g.ellipse(0,0,34*s,7*s,0,0,Math.PI*2); g.fill();
+  g.scale(p.facing,1); g.scale(s,s);
+  g.lineCap='round';
+  function leg(x,w,col){ g.strokeStyle=col; g.lineWidth=w; g.beginPath(); g.moveTo(x,-30); g.lineTo(x,-2); g.stroke();
+    g.fillStyle=C.nail; g.beginPath(); g.ellipse(x,-1.5,w*0.5,2.2,0,0,Math.PI*2); g.fill(); }
+  leg(-24,10,C.skinD); leg(20,10,C.skinD);              // far legs
+  g.fillStyle=C.skin; g.beginPath(); g.ellipse(-2,-46,30,20,0,0,Math.PI*2); g.fill();   // body
+  g.fillStyle=C.belly; g.beginPath(); g.ellipse(-2,-38,24,11,0,0,Math.PI*2); g.fill();
+  g.strokeStyle=C.skinD; g.lineWidth=2.4; g.beginPath(); g.moveTo(-30,-48); g.quadraticCurveTo(-39,-40,-37,-26); g.stroke();   // tail
+  g.fillStyle=C.eye; g.beginPath(); g.ellipse(-37,-25,1.5,2.4,0,0,Math.PI*2); g.fill();
+  leg(-18,11,C.skin); leg(26,11,C.skin);                // near legs
+  g.save(); g.translate(25,-52); g.rotate(Math.sin(p.earFlap)*0.13-0.08);   // big flapping ear
+    g.fillStyle=C.ear; g.beginPath(); g.ellipse(-5,2,12,15.5,0.18,0,Math.PI*2); g.fill();
+    g.fillStyle=C.earIn; g.beginPath(); g.ellipse(-4,2.5,7.5,10.5,0.18,0,Math.PI*2); g.fill();
+  g.restore();
+  g.fillStyle=C.skin; g.beginPath(); g.ellipse(31,-52,15,15,0,0,Math.PI*2); g.fill();   // head
+  g.fillStyle=C.tusk; g.beginPath(); g.moveTo(42,-40); g.quadraticCurveTo(50,-37,52,-41); g.quadraticCurveTo(47,-38,41,-38); g.closePath(); g.fill();   // tusk
+  elephantTrunk(g,p.tp,C.skin);                          // the star: the trunk
+  if(p.blink<=0){ g.fillStyle=C.eye; g.beginPath(); g.ellipse(34,-55,2,2.3,0,0,Math.PI*2); g.fill();
+    g.fillStyle='rgba(255,255,255,0.8)'; g.beginPath(); g.ellipse(33.4,-55.7,0.6,0.7,0,0,Math.PI*2); g.fill(); }
+  g.restore();
+}
+function drawDog(g,p){
+  var ds=depthScale(p.y), s=ds*DOG_S;
+  var C={fur:'#d59a52',furD:'#b87c39',belly:'#f0d8ad',ear:'#a96e30',nose:'#27201a',eye:'#241a12',tongue:'#e8717f'};
+  g.save(); g.translate(p.x,p.y);
+  g.fillStyle='rgba(45,55,45,0.16)'; g.beginPath(); g.ellipse(0,0,16*s,4*s,0,0,Math.PI*2); g.fill();
+  g.scale(p.facing,1);
+  g.translate(0,-(p.hop||0)*s);
+  g.rotate((p.shake||0)*0.12);
+  g.scale(s,s);
+  var ph=p.walkPhase, amt=clamp(p.speed/80,0.15,1.1), by=-20;
+  catLeg(g,-13,by+6,ph+Math.PI*0.5,amt,C.furD,3.4);     // far legs
+  catLeg(g,11,by+6,ph+Math.PI*1.5,amt,C.furD,3.4);
+  var tw=Math.sin(p.tailWag)*0.5;                        // waggy up-tail
+  g.strokeStyle=C.fur; g.lineWidth=4; g.lineCap='round';
+  g.beginPath(); g.moveTo(-15,by-1); g.quadraticCurveTo(-22,by-8+tw*6,-20,by-16+tw*4); g.stroke();
+  g.fillStyle=C.fur; g.beginPath(); g.ellipse(-2,by,16,8.5,0,0,Math.PI*2); g.fill();        // body
+  g.fillStyle=C.belly; g.beginPath(); g.ellipse(-1,by+4,12,4.5,0,0,Math.PI*2); g.fill();
+  catLeg(g,-11,by+6,ph+Math.PI*1.5,amt,C.fur,3.8);       // near legs
+  catLeg(g,13,by+6,ph+Math.PI*0.5,amt,C.fur,3.8);
+  g.fillStyle=C.fur;                                     // neck
+  g.beginPath(); g.moveTo(8,by-4); g.quadraticCurveTo(16,by-10,20,by-12); g.lineTo(20,by-2); g.quadraticCurveTo(14,by+1,8,by+2); g.closePath(); g.fill();
+  g.beginPath(); g.ellipse(20,by-12,8,7.5,0,0,Math.PI*2); g.fill();                          // head
+  g.beginPath(); g.ellipse(27,by-9,5.5,4,0,0,Math.PI*2); g.fill();                           // muzzle
+  g.fillStyle=C.nose; g.beginPath(); g.ellipse(31.5,by-10,1.8,1.5,0,0,Math.PI*2); g.fill();
+  if(p.tongue>0.2){ g.fillStyle=C.tongue; g.beginPath(); g.ellipse(29,by-5,1.6,2.4*p.tongue,0,0,Math.PI*2); g.fill(); }   // panting tongue
+  g.fillStyle=C.ear; g.beginPath(); g.moveTo(16,by-16); g.quadraticCurveTo(11,by-10,12,by-2); g.quadraticCurveTo(17,by-6,19,by-12); g.closePath(); g.fill();   // floppy ear
+  g.fillStyle=C.eye; g.beginPath(); g.ellipse(21,by-13,1.5,1.7,0,0,Math.PI*2); g.fill();
+  g.fillStyle='rgba(255,255,255,0.8)'; g.beginPath(); g.ellipse(20.5,by-13.6,0.5,0.6,0,0,Math.PI*2); g.fill();
+  g.restore();
+}
 function catLeg(g,hipX,hipY,phase,amt,color,w){
   var footX=hipX+Math.sin(phase)*5*amt;
   var footY=-Math.max(0,Math.sin(phase+Math.PI/2))*4*amt;
@@ -2278,6 +2474,10 @@ function drawParticles(g){
       var rr=2+(p.maxR-2)*kk;
       g.globalAlpha=clamp(1-kk,0,1)*0.5; g.strokeStyle='rgba(255,255,255,0.9)'; g.lineWidth=1.4;
       g.beginPath(); g.ellipse(p.x,p.y,rr,rr*0.5,0,0,Math.PI*2); g.stroke();
+    } else if(p.type==='drop'){
+      var fall=p.vy>0;                                   // streak as it falls, bead as it rises
+      g.globalAlpha=clamp(1-kk*0.5,0,1)*0.85; g.fillStyle='rgba(150,206,228,0.95)';
+      g.beginPath(); g.ellipse(p.x,p.y,p.r,p.r*(fall?1.7:1.2),0,0,Math.PI*2); g.fill();
     } else if(p.type==='zzz'){
       var za=clamp(1-kk,0,1)*0.85, zsz=p.s*(0.7+0.3*Math.min(1,p.t/0.3));
       g.globalAlpha=za; g.fillStyle='#f3f6ff'; g.textAlign='center'; g.textBaseline='middle';
