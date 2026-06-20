@@ -14,6 +14,7 @@ This document is a handover so the project can be continued in a fresh session (
 - Duck count currently 8.
 - **Live weather + day/night sync** for Wrexham, UK via the Open-Meteo API: real nighttime (deep-blue wash, twinkling stars, glowing moon, dimmed ducks) and rain effects (falling streaks + water-only splash ripples) that mirror the actual local conditions.
 - Tighter pellet swarming: up to 4 ducks can chase one pellet, and ducks now re-target every frame instead of locking on.
+- **Sleepy idle state**: after ~2 minutes without feeding, the flock gathers into a huddle, tucks their bills down, closes their eyes and falls asleep with little floating "z" bubbles — a gentle cue to put the phone down. Dropping a pellet wakes them with a quick wing-stretch, then they run for the food.
 
 ## Files (all live in the repo root, next to each other)
 
@@ -38,6 +39,7 @@ Everything is inside one IIFE in `index.html`. Rough map, top to bottom:
 - **Spawns** — `dropPellet`, `eatPellet`, and particle spawners (crumbs, hearts, tap rings, ripples).
 - **`assignFood()`** — each frame, assigns ducks to the best nearby pellet. Targets are re-evaluated every frame (no lock-in), so a duck instantly switches to a closer pellet dropped near it. A small contention penalty plus a per-pellet cap stop more than 4 ducks dogpiling one pellet.
 - **Weather sync (`syncWeather()`)** — async `fetch` of the Open-Meteo current-conditions API for Wrexham (lat 53.0456, lon -2.9755), reading `is_day` and `weather_code`. WMO codes 51–67 and 80–82 are treated as rain/drizzle. Results land in the global `weather = {loaded, isDay, rain}`. Called **once at startup**; there's no polling, so state is fixed for the session until reload. Network failures are caught and the app keeps its defaults (day, no rain).
+- **Sleepy idle (`manageSleep()`)** — called at the top of `update()` each frame. Tracks `state.lastFeed` (set in `dropPellet`); once `state.time - lastFeed` passes `SLEEP_DELAY` (and there are no pellets and no duck mid-meal), it picks a roost point at the flock's centroid and sends every duck to a golden-angle slot around it via a new `toRoost` state, after which each settles into a `sleep` state. Any new pellet flips `state.sleeping` off and calls `startWake()` on each duck (a brief `wake` stretch) before normal `assignFood()` seeking resumes. Sleeping/roosting/waking ducks are skipped by `assignFood()`. Each duck carries a `drowsy` 0→1 value (ramps up slowly, down briskly) that drives the head-tuck, closed eyes and breathing bob in `draw()`; `spawnZzz()` emits floating "z" particles while asleep.
 - **Weather rendering** — `drawStarsAndMoon(g)` (twinkling stars from a once-generated `stars[]` map + a layered glowing moon) and `drawRain(g)` (falling streaks). `render()` applies a dark blue night wash behind the ducks and a lighter wash in front so ducks blend in and dim. Splash ripples are spawned in `update()` only over water (`isWater`) while it's raining.
 - **Per-frame draw** — `render()` blits the static `bg`, then draws animated layers (clouds, water shimmer, ripples, depth-sorted ducks/pellets/lilies/reeds, particles, weather washes/effects, vignette).
 - **`audio` module** — a self-contained IIFE using the Web Audio API. All sound is synthesised live (no audio files): a breeze bed, an airy shimmer, occasional birdsong, plus one-shot sounds (pellet plip, eat nom, happy chirp).
@@ -59,6 +61,7 @@ All in `index.html`.
 - **Weather location** — the lat/lon and API URL in `syncWeather()` (currently Wrexham, UK). Swap the coordinates to relocate the pond's weather. To make weather refresh during a session, wrap `syncWeather()` in a `setInterval` (it's a one-shot call today).
 - **Rain intensity** — splash spawn rate is the `Math.random() < dt * 15` test in `update()`; streak look is in `drawRain()`.
 - **Night look** — wash colours/opacity in `render()`'s night branches, plus the moon size/position and star count (`for(...i<80...)`) near the top.
+- **Sleep timing** — `var SLEEP_DELAY=120;` (seconds of no feeding before the flock sleeps) near the top. Huddle tightness is the `rad=20+(i%3)*13` slots in `manageSleep()`. Fall-asleep vs wake speed is the asymmetric `drowsyRate` (1.4 up / 4.5 down) in `Duck.update`. Zzz frequency is the `this.zzzT=2.2+...` reset in `Duck.update`; "z" look is the `type==='zzz'` branch in `drawParticles`.
 - **Audio bed** — in `startAmbient()`:
   - Breeze volume: `windGain.gain.value = 0.03`
   - Breeze tone: `wbp.frequency.value = 700` (lower = deeper/softer)
@@ -101,6 +104,7 @@ All in `index.html`.
 - **Remember the sound on/off preference** between visits with `localStorage` (works on the real GitHub Pages site).
 - **Periodic weather refresh** — wrap `syncWeather()` in a `setInterval` so a long-open session follows dusk/rain in real time.
 - **Night-time audio** — crickets/owl bed when `weather.isDay === 0`, to match the visual night mode.
+- **Sleep polish** — a soft sit-down pose or quieter audio bed while the flock is asleep (`state.sleeping`); maybe one duck stays "on watch".
 - **More weather states** — snow, fog, or wind-driven ripples driven off the same `weather_code`.
 - **A gentle running-water trickle** layer near the shore.
 - **Ducklings** following a parent, or more colour variety.

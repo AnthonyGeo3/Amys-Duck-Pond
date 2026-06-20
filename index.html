@@ -92,7 +92,9 @@ var shorePts=[];
 var ducksInit=false,running=true,last=0,hinted=false;
 
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
-var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0};
+var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null};
+// Seconds of no feeding (and no pellets left) before the flock groups up and falls asleep.
+var SLEEP_DELAY=120;
 
 // Static star map generated once
 var stars=[]; 
@@ -150,6 +152,7 @@ function Duck(o){
   this.state='wander'; this.stateT=0; this.stateDur=1.5;
   this.tx=this.x; this.ty=this.y; this.targetPellet=null;
   this.swimming=isWater(this.x,this.y); this.prevSwim=this.swimming; this.wakeT=0;
+  this.drowsy=0; this.zzzT=rand(0.8,3.2);
   this.pickWander();
 }
 Duck.prototype.pickWander=function(){
@@ -174,6 +177,10 @@ Duck.prototype.startHappy=function(){
   if(this.swimming) spawnRipple(this.x,this.y,18);
   audio.happy();
 };
+Duck.prototype.startWake=function(){
+  // A quick stretch/flap before they go chasing the new pellet.
+  this.state='wake'; this.stateDur=0.4+Math.random()*0.2; this.stateT=0; this.targetPellet=null;
+};
 Duck.prototype.update=function(dt){
   this.swimming=isWater(this.x,this.y);
   if(this.swimming!==this.prevSwim){ spawnRipple(this.x,this.y,15); this.prevSwim=this.swimming; }
@@ -182,6 +189,7 @@ Duck.prototype.update=function(dt){
   var tx,ty,maxSpeed;
   if(this.state==='seek'&&this.targetPellet){ tx=this.targetPellet.x; ty=this.targetPellet.y; maxSpeed=RUN; }
   else if(this.state==='wander'){ tx=this.tx; ty=this.ty; maxSpeed=WALK; }
+  else if(this.state==='toRoost'){ tx=this.tx; ty=this.ty; maxSpeed=WALK*0.6; }
   else { tx=this.x; ty=this.y; maxSpeed=0; }
 
   var dx=tx-this.x, dy=ty-this.y, dd=Math.hypot(dx,dy)||1;
@@ -206,6 +214,18 @@ Duck.prototype.update=function(dt){
   this.leanCur+=(leanTarget-this.leanCur)*Math.min(1,dt*6);
   this.bobCur=Math.sin(this.bobPhase)*(this.swimming?2.0:(0.8+this.legAmt*1.4));
 
+  // sleepiness: ramps up while roosting/sleeping, eases back when awake
+  var drowsyTarget=this.state==='sleep'?1:(this.state==='toRoost'?0.3:0);
+  var drowsyRate=drowsyTarget>this.drowsy?1.4:4.5; // drift off slowly, wake up briskly
+  this.drowsy+=(drowsyTarget-this.drowsy)*Math.min(1,dt*drowsyRate);
+  if(this.state==='sleep'){
+    this.bobCur+=Math.sin(state.time*1.5+this.seed)*this.drowsy*0.8; // gentle breathing
+    if(this.drowsy>0.6){
+      this.zzzT-=dt;
+      if(this.zzzT<=0){ spawnZzz(this.x+this.facing*5,this.y-34*depthScale(this.y),this.facing); this.zzzT=2.2+Math.random()*2.4; }
+    }
+  }
+
   // celebration drivers
   if(this.state==='happy'){
     this.happyT+=dt;
@@ -223,6 +243,10 @@ Duck.prototype.update=function(dt){
       this.wingFlap=Math.sin(this.happyT*20)*0.38;
       this.hop=Math.abs(Math.sin(this.happyT*11))*2.4;
     }
+  } else if(this.state==='wake'){
+    this.pattering=false;
+    this.wingFlap=Math.sin(this.stateT*22)*0.4; // a sleepy stretch of the wings
+    this.hop+=(0-this.hop)*Math.min(1,dt*9);
   } else {
     this.pattering=false;
     this.wingFlap+=(0-this.wingFlap)*Math.min(1,dt*9);
@@ -251,6 +275,8 @@ Duck.prototype.update=function(dt){
   else if(this.state==='happy'){ if(this.stateT>=this.stateDur){ this.pattering=false; this.pickIdle(); } }
   else if(this.state==='wander'){ var rd=Math.hypot(this.tx-this.x,this.ty-this.y); if(rd<6||this.stateT>=this.stateDur) this.pickIdle(); }
   else if(this.state==='pause'||this.state==='peck'){ if(this.stateT>=this.stateDur) this.pickIdle(); }
+  else if(this.state==='toRoost'){ var rr=Math.hypot(this.tx-this.x,this.ty-this.y); if(rr<7||this.stateT>=12){ this.state='sleep'; this.stateT=0; } }
+  else if(this.state==='wake'){ if(this.stateT>=this.stateDur) this.pickIdle(); }
 };
 Duck.prototype.draw=function(g){
   var ds=depthScale(this.y), s=this.size*ds, p=this.pal, swim=this.swimming;
@@ -274,6 +300,7 @@ Duck.prototype.draw=function(g){
   var hx=headBaseX+dip*7;
   var hy=headBaseY+dip*(swim?36:21);
   if(this.state==='happy'){ hy+=Math.sin(this.happyT*16)*0.9; hx+=Math.sin(this.happyT*16+1)*0.6; }
+  if(this.drowsy>0.01){ hx-=this.drowsy*9; hy+=this.drowsy*16; } // sink the head back & down: bill tucked toward the wing
   var bob=this.bobCur;
   var self=this;
 
@@ -333,7 +360,7 @@ Duck.prototype.draw=function(g){
     g.strokeStyle=p.beakDark; g.lineWidth=0.8; g.beginPath(); g.moveTo(bkx-0.6,bky+0.2); g.quadraticCurveTo(bkx+6,bky-0.1,bkx+9.0,bky-0.5); g.stroke();
     g.fillStyle=p.beakDark; g.beginPath(); g.ellipse(bkx+2.4,bky-1.4,0.6,0.5,0,0,Math.PI*2); g.fill();
     var ex=hx+headR*0.28, ey=hy-headR*0.24;
-    if(self.blink>0){
+    if(self.blink>0||self.drowsy>0.5){
       g.strokeStyle=p.eye; g.lineWidth=1.1; g.lineCap='round';
       g.beginPath(); g.moveTo(ex-2,ey); g.quadraticCurveTo(ex,ey+1.4,ex+2,ey); g.stroke();
     } else {
@@ -515,6 +542,7 @@ function dropPellet(x,y){
   if(state.pellets.length>=60) state.pellets.shift();
   var inWater=isWater(x,y);
   state.pellets.push({x:x,y:y,z:24*depthScale(y),vz:0,inWater:inWater,claims:0,settled:false,bob:Math.random()*6.283});
+  state.lastFeed=state.time;
   spawnTap(x,y); hideHint(); audio.plip(inWater);
 }
 function eatPellet(pe,duck){
@@ -529,6 +557,7 @@ function spawnCrumb(x,y){ state.particles.push({type:'crumb',x:x,y:y,vx:rand(-44
 function spawnHeart(x,y){ state.particles.push({type:'heart',x:x,y:y,vx:rand(-8,8),vy:-22,s:rand(2.6,3.4),t:0,life:1.1}); }
 function spawnTap(x,y){ state.particles.push({type:'ring',x:x,y:y,maxR:22,t:0,life:0.5}); }
 function spawnRipple(x,y,maxR){ if(state.ripples.length>60) state.ripples.shift(); state.ripples.push({x:x,y:y,maxR:maxR,r:2,t:0,life:1.1}); }
+function spawnZzz(x,y,dir){ state.particles.push({type:'zzz',x:x,y:y,vx:(dir||1)*rand(4,9),vy:rand(-24,-16),s:rand(9,14),t:0,life:rand(1.9,2.6)}); }
 
 // ---------- food assignment ----------
 function assignFood(){
@@ -536,7 +565,7 @@ function assignFood(){
   for(i=0;i<pellets.length;i++) pellets[i].claims=0;
   for(var d=0;d<state.ducks.length;d++){
     dk=state.ducks[d];
-    if(dk.state==='eat'||dk.state==='happy') continue;
+    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake') continue;
     var best=null,bestScore=Infinity,bestDist=0;
     for(i=0;i<pellets.length;i++){
       var pe=pellets[i];
@@ -570,6 +599,7 @@ function updateParticles(dt){
     var p=state.particles[i]; p.t+=dt;
     if(p.type==='crumb'){ p.vy+=g*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; }
     else if(p.type==='heart'){ p.y+=p.vy*dt; p.vy+=10*dt; p.x+=p.vx*dt; }
+    else if(p.type==='zzz'){ p.y+=p.vy*dt; p.x+=p.vx*dt; }
     if(p.t>=p.life) state.particles.splice(i,1);
   }
 }
@@ -583,7 +613,36 @@ function updateClouds(dt){
   for(var i=0;i<state.clouds.length;i++){ var c=state.clouds[i]; c.x+=c.sp*dt; if(c.x>W+90) c.x=-90; }
 }
 
+function manageSleep(){
+  var ducks=state.ducks, i, d;
+  if(state.sleeping){
+    // Any fresh food wakes the whole flock.
+    if(state.pellets.length>0){
+      state.sleeping=false;
+      for(i=0;i<ducks.length;i++){ d=ducks[i]; if(d.state==='sleep'||d.state==='toRoost') d.startWake(); }
+    }
+    return;
+  }
+  // Don't drift off mid-meal or mid-celebration.
+  if(state.pellets.length>0) return;
+  if(state.time-state.lastFeed<SLEEP_DELAY) return;
+  for(i=0;i<ducks.length;i++){ var s=ducks[i].state; if(s==='seek'||s==='eat'||s==='happy'||s==='wake') return; }
+  // Time to roost: gather around the flock's centre and settle down.
+  var cx=0,cy=0,n=ducks.length||1;
+  for(i=0;i<ducks.length;i++){ cx+=ducks[i].x; cy+=ducks[i].y; }
+  cx=clamp(cx/n,40,W-40); cy=clamp(cy/n,groundTop+40,H-40);
+  state.roost={x:cx,y:cy}; state.sleeping=true;
+  for(i=0;i<ducks.length;i++){
+    d=ducks[i];
+    var ang=i*2.399963, rad=20+(i%3)*13; // golden-angle huddle so they don't stack
+    d.tx=clamp(cx+Math.cos(ang)*rad,26,W-26);
+    d.ty=clamp(cy+Math.sin(ang)*rad,groundTop+26,H-26);
+    d.state='toRoost'; d.stateT=0; d.targetPellet=null;
+  }
+}
+
 function update(dt){
+  manageSleep();
   assignFood();
   for(var i=0;i<state.ducks.length;i++) state.ducks[i].update(dt);
   updatePellets(dt); updateParticles(dt); updateRipples(dt); updateClouds(dt);
@@ -726,6 +785,11 @@ function drawParticles(g){
       var rr=2+(p.maxR-2)*kk;
       g.globalAlpha=clamp(1-kk,0,1)*0.5; g.strokeStyle='rgba(255,255,255,0.9)'; g.lineWidth=1.4;
       g.beginPath(); g.ellipse(p.x,p.y,rr,rr*0.5,0,0,Math.PI*2); g.stroke();
+    } else if(p.type==='zzz'){
+      var za=clamp(1-kk,0,1)*0.85, zsz=p.s*(0.7+0.3*Math.min(1,p.t/0.3));
+      g.globalAlpha=za; g.fillStyle='#f3f6ff'; g.textAlign='center'; g.textBaseline='middle';
+      g.font='italic '+zsz.toFixed(1)+'px Georgia, "Times New Roman", serif';
+      g.fillText('z',p.x+Math.sin(p.t*3)*3,p.y);
     }
   }
   g.globalAlpha=1;
