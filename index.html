@@ -279,6 +279,7 @@ var SLEEP_MIN=60, SLEEP_MAX=120;
 function rollSleepDelay(){ state.sleepDelay=rand(SLEEP_MIN,SLEEP_MAX); }
 // A random cute animal wanders in once every VISITOR_MIN..VISITOR_MAX seconds, one at a time.
 var VISITOR_MIN=60, VISITOR_MAX=90;
+var GIRAFFE_S=0.92;             // overall scale of the giraffe (it's a big one)
 
 // Static star map generated once
 var stars=[]; 
@@ -412,6 +413,17 @@ Duck.prototype.update=function(dt){
     var my=clamp(baseY+off,groundTop+28,H-32), mx=clamp(shoreX(my)-3,20,W-20);
     tx=mx; ty=my; maxSpeed=WALK*1.1;
   }
+  else if(this.state==='toGiraffe'){
+    // hurry over to the giraffe's front legs to climb aboard
+    var mp=state.giraffeMount||{x:this.x,y:this.y};
+    tx=mp.x; ty=clamp(mp.y,groundTop+16,H-16); maxSpeed=WALK*1.3;
+  }
+  else if(this.state==='ride'){
+    // perched on the giraffe's back — glue to the saddle point, no physics of our own
+    var gr=state.visitor;
+    if(gr&&gr.kind==='giraffe'){ var bp=giraffeBackPoint(gr); this.x=bp.x; this.y=bp.y; this.facing=gr.facing; }
+    this.vx=0; this.vy=0; tx=this.x; ty=this.y; maxSpeed=0;
+  }
   else if(this.state==='visit'){
     // amble over to a friendly spot near the guest and mill about happily
     var fr=state.friend||{x:this.x,y:this.y};
@@ -444,9 +456,11 @@ Duck.prototype.update=function(dt){
   this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
   this.x+=this.vx*dt; this.y+=this.vy*dt;
 
-  var m=18;
-  if(this.x<m){this.x=m;this.vx*=-0.3;} if(this.x>W-m){this.x=W-m;this.vx*=-0.3;}
-  if(this.y<groundTop+m){this.y=groundTop+m;this.vy*=-0.3;} if(this.y>H-m){this.y=H-m;this.vy*=-0.3;}
+  if(this.state!=='ride'){   // a riding duck is perched above the grass line; don't clamp it back down
+    var m=18;
+    if(this.x<m){this.x=m;this.vx*=-0.3;} if(this.x>W-m){this.x=W-m;this.vx*=-0.3;}
+    if(this.y<groundTop+m){this.y=groundTop+m;this.vy*=-0.3;} if(this.y>H-m){this.y=H-m;this.vy*=-0.3;}
+  }
 
   this.speed=Math.hypot(this.vx,this.vy);
   if(Math.abs(this.vx)>6) this.facing=this.vx>0?1:-1;
@@ -941,7 +955,8 @@ var VISITORS=[
   { id:'panda', name:'Red panda',  make:function(){ return new RedPanda(); } },
   { id:'stork', name:'Stork',      make:function(){ return new Stork(); } },
   { id:'dragonfly', name:'Dragonflies', make:function(){ return new Dragonfly(); } },
-  { id:'frog',  name:'Frogs',      make:function(){ return new FrogFamily(); } }
+  { id:'frog',  name:'Frogs',      make:function(){ return new FrogFamily(); } },
+  { id:'giraffe', name:'Giraffe',  make:function(){ return new Giraffe(); } }
 ];
 function visitorById(id){ for(var i=0;i<VISITORS.length;i++) if(VISITORS[i].id===id) return VISITORS[i]; return null; }
 function unlockedVisitors(){ var r=[]; for(var i=0;i<VISITORS.length;i++) if(state.unlocked&&state.unlocked[VISITORS[i].id]) r.push(VISITORS[i]); return r; }
@@ -951,8 +966,8 @@ function summonVisitor(maker){
     if(state.visitor.spooks||state.visitor.befriends){ for(var i=0;i<state.ducks.length;i++){ state.ducks[i].pickIdle(); state.ducks[i].friendDecided=false; } }
     if(state.dfChaser) state.dfChaser.pickIdle();
     if(state.frogChaser) state.frogChaser.pickIdle();
-    for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic') state.ducks[mj].pickIdle();
-    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null;
+    for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic'||state.ducks[mj].state==='ride'||state.ducks[mj].state==='toGiraffe') state.ducks[mj].pickIdle();
+    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null; state.giraffeMount=null;
   }
   state.visitor=maker();
   scheduleNextVisitor();
@@ -1030,12 +1045,41 @@ function manageVisitor(dt){
       } else { // taking off — everyone go back to normal
         for(var li=0;li<state.ducks.length;li++) if(state.ducks[li].state==='mimic') state.ducks[li].pickIdle();
       }
+    } else if(state.visitor.rides){
+      // Giraffe: one nearby duck waddles over, climbs aboard, rides a while, then hops down.
+      var gir=state.visitor;
+      state.giraffeMount={ x:clamp(gir.x+gir.facing*16,16,W-16), y:clamp(gir.y+6,groundTop+16,H-16) };  // climb-on spot by the front legs
+      if(gir.rider){
+        var rdr=gir.rider;
+        if(rdr.state==='toGiraffe'){
+          gir.approachT-=dt;
+          if(Math.hypot(rdr.x-state.giraffeMount.x,rdr.y-state.giraffeMount.y)<24){       // reached it — climb up
+            rdr.state='ride'; rdr.hop=6; gir.rideT=rand(9,17);
+            spawnHeart(gir.x, gir.y-72*depthScale(gir.y));
+          } else if(gir.approachT<=0 || gir.state==='leave'){ rdr.pickIdle(); gir.rider=null; }  // gave up / giraffe leaving
+        } else if(rdr.state==='ride'){
+          gir.rideT-=dt;
+          if(Math.random()<dt*0.25) spawnHeart(gir.x+rand(-6,6), gir.y-74*depthScale(gir.y));   // happy little hearts up top
+          if(gir.rideT<=0 || gir.state==='leave'){                                       // hop down beside the giraffe
+            rdr.x=clamp(gir.x-gir.facing*24,16,W-16); rdr.y=clamp(gir.y+8,groundTop+16,H-16);
+            rdr.vx=0; rdr.vy=0; rdr.hop=5; rdr.pickIdle(); gir.rider=null;
+          }
+        } else { gir.rider=null; }   // safety: rider lost its state
+      } else if(gir.lifeT<gir.life-8 && (gir.state==='amble'||gir.state==='pause')){
+        var pick=null, pd=180;       // nearest idle duck within reach
+        for(var gi=0;gi<state.ducks.length;gi++){ var gd=state.ducks[gi];
+          if(gd.state!=='wander'&&gd.state!=='pause'&&gd.state!=='peck') continue;
+          var gdd=Math.hypot(gd.x-gir.x,gd.y-gir.y); if(gdd<pd){ pd=gdd; pick=gd; }
+        }
+        if(pick && Math.random()<dt*0.8){ pick.state='toGiraffe'; pick.targetPellet=null; gir.rider=pick; gir.approachT=14; }
+      }
     }
     if(state.visitor.done){
       var wasReact=state.visitor.spooks||state.visitor.befriends;
       if(state.dfChaser){ state.dfChaser.pickIdle(); }
       if(state.frogChaser){ state.frogChaser.pickIdle(); }
-      for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic') state.ducks[mj].pickIdle();
+      for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic'||state.ducks[mj].state==='ride'||state.ducks[mj].state==='toGiraffe') state.ducks[mj].pickIdle();
+      state.giraffeMount=null;
       state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null;
       if(wasReact){ for(var j=0;j<state.ducks.length;j++){ state.ducks[j].pickIdle(); state.ducks[j].friendDecided=false; } state.lastFeed=state.time; rollSleepDelay(); }
       if(state.time>=state.nextVisitor) scheduleNextVisitor();   // countdown already started at arrival; only re-roll if the visit outlasted it
@@ -1217,6 +1261,51 @@ RedPanda.prototype.update=function(dt){
   this.bob=Math.sin(this.walkPhase)*Math.min(1,this.speed/40);
   this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(1.8,4.5); }
 };
+
+// ----- Giraffe: strolls in tall and gentle; a duck waddles over and rides on its back for a while -----
+function Giraffe(){
+  this.kind='giraffe'; this.spooks=false; this.rides=true; this.done=false;
+  this.y=clamp(groundTop+(H-groundTop)*rand(0.5,0.84),groundTop+80,H-40);
+  this.x=W+60; this.facing=-1; this.vx=0; this.vy=0; this.speed=0; this.walkPhase=0;
+  this.state='enter'; this.stateT=0; this.lifeT=0; this.life=rand(34,50);
+  this.blink=0; this.blinkT=rand(2,5); this.bob=0; this.neckSway=rand(0,6.283);
+  this.rider=null; this.rideT=0; this.approachT=0;          // ride bookkeeping
+  this.tx=clamp(W*rand(0.5,0.78),90,W-44); this.ty=this.y; this.pauseDur=0;
+}
+Giraffe.prototype.pickAmble=function(){
+  var y=clamp(this.y+rand(-80,80),groundTop+74,H-34);
+  var lo=landX(y,44);
+  this.tx=clamp(rand(lo,W-44),lo,W-44); this.ty=y;
+};
+Giraffe.prototype.update=function(dt){
+  this.stateT+=dt; this.lifeT+=dt; this.neckSway+=dt*0.8;
+  var maxSpeed=0, hasRider=!!this.rider;
+  if(this.state==='enter'){ maxSpeed=46;
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<12){ this.state='amble'; this.stateT=0; this.pickAmble(); }
+  } else if(this.state==='amble'){ maxSpeed=hasRider?22:28;   // slow right down so a duck can catch up / enjoy the ride
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<12){
+      if(this.lifeT>this.life && !hasRider){ this.state='leave'; this.tx=W+80; this.ty=clamp(this.y,groundTop+60,H-40); }
+      else if(Math.random()<0.45){ this.state='pause'; this.stateT=0; this.pauseDur=rand(1.4,3.4); }
+      else this.pickAmble();
+    }
+  } else if(this.state==='pause'){ maxSpeed=0;
+    if(this.stateT>this.pauseDur){ if(this.lifeT>this.life && !hasRider){ this.state='leave'; this.tx=W+80; this.ty=clamp(this.y,groundTop+60,H-40); } else { this.state='amble'; this.pickAmble(); } }
+  } else if(this.state==='leave'){ maxSpeed=50; if(this.x>W+60) this.done=true; }
+  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1;
+  var desVx=0,desVy=0; if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
+  var steer=Math.min(1,dt*4);
+  this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  this.x+=this.vx*dt; this.y+=this.vy*dt;
+  if(this.state!=='leave'){ var edge=landX(this.y,18); if(this.x<edge){ this.x=edge; this.vx+=8; } }  // stay on the grass
+  this.y=clamp(this.y,groundTop+40,H-30);
+  this.speed=Math.hypot(this.vx,this.vy);
+  if(Math.abs(this.vx)>5) this.facing=this.vx>0?1:-1;
+  this.walkPhase+=dt*(2.2+this.speed*0.08);
+  this.bob=Math.sin(this.walkPhase)*Math.min(1,this.speed/30);
+  this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(2,5); }
+};
+// world-space point on the giraffe's back where a duck perches
+function giraffeBackPoint(g){ var s=depthScale(g.y)*GIRAFFE_S; return { x:g.x+g.facing*(-3)*s, y:g.y-(g.bob||0)*s*0.4 + (-70)*s }; }
 
 // ----- Stork: glides in from the sky, lands at the waterside, fishes a while, then flies off -----
 function Stork(){
@@ -1462,7 +1551,7 @@ function drawScene(g){
   items.sort(function(a,b){return a.y-b.y;});
   for(i=0;i<items.length;i++){
     var it=items[i];
-    if(it.k===0) it.o.draw(g);
+    if(it.k===0){ if(it.o.state==='ride') continue; it.o.draw(g); }   // the rider is drawn on top of the giraffe by drawGiraffe
     else if(it.k===1) drawPellet(g,it.o);
     else if(it.k===2) drawLily(g,it.o);
     else if(it.k===3) drawReed(g,it.o);
@@ -1510,7 +1599,7 @@ function drawReed(g,rd){
     g.strokeStyle='#5f923c'; g.lineWidth=1; g.beginPath(); g.moveTo(tx,ty); g.lineTo(tx+sway*0.08,ty-rd.h*0.14); g.stroke();
   }
 }
-function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); }
+function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); else if(v.kind==='giraffe') drawGiraffe(g,v); }
 function drawFrogFamily(g,fam){
   var all=fam.babies.concat([fam.parent]); all.sort(function(a,b){return a.y-b.y;});
   for(var i=0;i<all.length;i++) drawFrog(g,all[i]);
@@ -1640,6 +1729,81 @@ function drawPanda(g,p){
   else { g.fillStyle=P.eye; g.beginPath(); g.ellipse(ex,ey,2.1,2.3,0,0,Math.PI*2); g.fill();
     g.fillStyle='rgba(255,255,255,0.85)'; g.beginPath(); g.ellipse(ex-0.6,ey-0.8,0.7,0.8,0,0,Math.PI*2); g.fill(); }
   g.restore();
+}
+function giraffeLeg(g,baseX,hipY,phase,amt,col,w){
+  var sw=Math.sin(phase)*7*amt, footX=baseX+sw, kneeX=baseX+sw*0.5, kneeY=hipY*0.5;
+  var footY=-Math.max(0,Math.sin(phase+Math.PI/2))*4*amt;
+  g.strokeStyle=col; g.lineWidth=w; g.lineCap='round'; g.lineJoin='round';
+  g.beginPath(); g.moveTo(baseX,hipY); g.quadraticCurveTo(kneeX,kneeY,footX,footY); g.stroke();
+  g.fillStyle='#4f3f2c'; g.beginPath(); g.ellipse(footX,footY-1,w*0.42,w*0.52,0,0,Math.PI*2); g.fill();   // hoof
+}
+function drawGiraffe(g,p){
+  var ds=depthScale(p.y), s=ds*GIRAFFE_S;
+  var C={coat:'#e7c579',coatD:'#d8b25f',belly:'#f2dfac',spot:'#b27c3e',hoof:'#4f3f2c',horn:'#8a6a44',muzzle:'#efe2c0',eye:'#2c1e12',mane:'#7c5c34'};
+  g.save();
+  g.translate(p.x,p.y);
+  g.fillStyle='rgba(45,55,45,0.16)'; g.beginPath(); g.ellipse(0,0,26*s,5.5*s,0,0,Math.PI*2); g.fill();
+  g.scale(p.facing,1);
+  g.translate(0,-(p.bob||0)*s*0.4);
+  g.scale(s,s);
+  var ph=p.walkPhase, amt=clamp(p.speed/30,0.12,1);
+  g.lineCap='round'; g.lineJoin='round';
+  // tail
+  var tsw=Math.sin(p.neckSway*1.3)*3;
+  g.strokeStyle=C.coatD; g.lineWidth=2.4; g.beginPath(); g.moveTo(-20,-54); g.quadraticCurveTo(-26,-42,-25+tsw,-28); g.stroke();
+  g.strokeStyle=C.eye; g.lineWidth=3.0; g.beginPath(); g.moveTo(-25+tsw,-28); g.lineTo(-26+tsw,-21); g.stroke();
+  // far pair of legs (behind)
+  giraffeLeg(g,-15,-50,ph+Math.PI*0.5,amt,C.coatD,5.0);
+  giraffeLeg(g,13,-52,ph+Math.PI*1.5,amt,C.coatD,5.2);
+  // body (sloping back, raised shoulders)
+  g.fillStyle=C.coat;
+  g.beginPath();
+  g.moveTo(-20,-58);
+  g.quadraticCurveTo(-22,-70,-6,-72);
+  g.quadraticCurveTo(10,-74,18,-66);
+  g.quadraticCurveTo(24,-60,20,-50);
+  g.quadraticCurveTo(8,-44,-8,-46);
+  g.quadraticCurveTo(-20,-48,-20,-58);
+  g.closePath(); g.fill();
+  g.fillStyle=C.belly; g.beginPath(); g.ellipse(2,-50,15,5,0,0,Math.PI*2); g.fill();
+  // neck up to the head
+  g.fillStyle=C.coat;
+  g.beginPath();
+  g.moveTo(12,-66); g.lineTo(20,-66);
+  g.quadraticCurveTo(30,-92,30,-108);
+  g.lineTo(23,-110);
+  g.quadraticCurveTo(20,-92,10,-66);
+  g.closePath(); g.fill();
+  // mane ticks along the back of the neck
+  g.strokeStyle=C.mane; g.lineWidth=2.2;
+  var mane=[[11,-68],[14,-80],[18,-92],[22,-103]];
+  for(var mi=0;mi<mane.length;mi++){ g.beginPath(); g.moveTo(mane[mi][0],mane[mi][1]); g.lineTo(mane[mi][0]-3.2,mane[mi][1]-3); g.stroke(); }
+  // head
+  g.save(); g.translate(27,-111);
+  g.strokeStyle=C.horn; g.lineWidth=2.2;
+  g.beginPath(); g.moveTo(-1,-3); g.lineTo(-2,-9); g.stroke(); g.fillStyle=C.hoof; g.beginPath(); g.ellipse(-2,-10,2,2,0,0,Math.PI*2); g.fill();
+  g.strokeStyle=C.horn; g.beginPath(); g.moveTo(4,-3); g.lineTo(4.5,-9); g.stroke(); g.fillStyle=C.hoof; g.beginPath(); g.ellipse(4.5,-10,2,2,0,0,Math.PI*2); g.fill();
+  g.fillStyle=C.coatD; g.beginPath(); g.ellipse(-4,-1.5,4,2.4,-0.5,0,Math.PI*2); g.fill();   // ear
+  g.fillStyle=C.coat; g.beginPath(); g.ellipse(2,0,7,5.4,0.2,0,Math.PI*2); g.fill();          // head
+  g.fillStyle=C.muzzle; g.beginPath(); g.ellipse(9,2,4.6,3.4,0.2,0,Math.PI*2); g.fill();       // muzzle
+  g.fillStyle=C.eye; g.beginPath(); g.ellipse(11.2,2,0.7,0.9,0,0,Math.PI*2); g.fill();          // nostril
+  if(p.blink>0){ g.strokeStyle=C.eye; g.lineWidth=1; g.beginPath(); g.moveTo(1.2,-1); g.quadraticCurveTo(3,0.5,5,-1); g.stroke(); }
+  else { g.fillStyle=C.eye; g.beginPath(); g.ellipse(3,-1.3,1.8,2.0,0,0,Math.PI*2); g.fill();
+    g.fillStyle='rgba(255,255,255,0.85)'; g.beginPath(); g.ellipse(2.4,-2.0,0.6,0.7,0,0,Math.PI*2); g.fill(); }
+  g.restore();
+  // spots
+  g.fillStyle=C.spot;
+  var spots=[[-12,-60,3.0,2.6],[-4,-66,3.0,2.8],[5,-62,2.8,2.6],[12,-65,2.6,2.6],[-14,-52,2.4,2.6],[-2,-55,2.8,2.4],[9,-55,2.6,2.4],[16,-61,2.4,2.4],[14,-74,2.2,2.4],[20,-84,2.2,2.6],[25,-96,2.0,2.4],[24,-105,1.8,2.2]];
+  for(var si=0;si<spots.length;si++){ var sp=spots[si]; g.beginPath(); g.ellipse(sp[0],sp[1],sp[2],sp[3],0.3,0,Math.PI*2); g.fill(); }
+  // near pair of legs (front)
+  giraffeLeg(g,-15,-50,ph+Math.PI,amt,C.coat,5.4);
+  giraffeLeg(g,13,-52,ph,amt,C.coat,5.6);
+  // upper-leg spots (over the near legs)
+  g.fillStyle=C.spot; g.beginPath(); g.ellipse(13,-47,2.2,3,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(-15,-45,2.0,2.8,0,0,Math.PI*2); g.fill();
+  g.restore();
+  // the riding duck sits on top of the back
+  if(p.rider && p.rider.state==='ride') p.rider.draw(g);
 }
 function drawStork(g,s){
   var ds=depthScale(s.y), sc=ds*1.0, flying=(s.state==='flyIn'||s.state==='flyOut');
