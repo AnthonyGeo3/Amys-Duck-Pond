@@ -193,6 +193,8 @@ var CURRENCY='Quacks';          // rename here to taste
 var EARN_PER_PELLET=1;          // +1 each time a duck actually eats a pellet
 var EARN_PER_MINUTE=100;        // passive earnings while the app is open
 var SAVE_KEY='duckpond_save_v1';
+var BABY_MS=24*60*60*1000;      // a newly bought duck stays a duckling for 24h, then grows up
+var _births=[];                 // shared per-duck birth timestamps (index-aligned with the flock; 0 = grown)
 
 // Shared pond via Firebase Realtime Database. One record at ponds/shared that both phones subscribe to.
 // Earnings/spends are committed as atomic transactions so the two clients can't clobber each other.
@@ -214,17 +216,21 @@ function addCurrency(n){ state.currency+=n; if(_pondRef) _pendingEarn+=n; }   //
 function applyPond(p){           // mirror the shared record into local state + the world
   p=p||{};
   state.currency=(typeof p.currency==='number'?p.currency:0)+_pendingEarn;
+  _births=normBirths(p.births, typeof p.ducks==='number'?p.ducks:1);
   setDuckCount(typeof p.ducks==='number'?p.ducks:1);
+  syncDuckAges();
   state.unlocked=p.unlocked||{};
   if(typeof refreshShopUI==='function') refreshShopUI();
 }
-function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{} }; }
+function normBirths(b,n){ var out=[]; b=b||[]; for(var i=0;i<n;i++) out[i]=(typeof b[i]==='number')?b[i]:0; return out; }  // dense, length n, 0 = grown
+function syncDuckAges(){ for(var i=0;i<state.ducks.length;i++) state.ducks[i].bornAt=_births[i]||0; }  // keep live ducks in step with the shared birth list
+function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount) }; }
 var store={
   load:function(){
     try{ var s=JSON.parse(localStorage.getItem(SAVE_KEY)||'{}');
       if(typeof s.pendingEarn==='number') _pendingEarn=s.pendingEarn;
       if(typeof s.currency==='number') state.currency=s.currency;
-      if(typeof s.ducks==='number') setDuckCount(s.ducks);
+      if(typeof s.ducks==='number'){ _births=normBirths(s.births, s.ducks); setDuckCount(s.ducks); syncDuckAges(); }
       if(s.unlocked) state.unlocked=s.unlocked;
     }catch(e){}
     this._connect();
@@ -245,14 +251,14 @@ var store={
   },
   save:function(){
     if(_pondRef && _remoteReady){ var d=Math.round(_pendingEarn); if(d!==0){ _pendingEarn-=d; _pondRef.transaction(function(p){ p=p||{}; p.currency=(p.currency||0)+d; return p; }); } }
-    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{} })); }catch(e){}
+    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount) })); }catch(e){}
   },
   buyDuck:function(){
     if(state.duckCount>=DUCK_LIMIT || Math.floor(state.currency)<duckCost()) return false;
     if(_pondRef && _remoteReady){
       _pondRef.transaction(function(p){ p=p||_localPond(); var c=500*(p.ducks||1);   // atomic: re-check affordability against the shared total
-        if((p.ducks||1)<DUCK_LIMIT && (p.currency||0)>=c){ p.currency-=c; p.ducks=(p.ducks||1)+1; } return p; });
-    } else { state.currency-=duckCost(); setDuckCount(state.duckCount+1); this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
+        if((p.ducks||1)<DUCK_LIMIT && (p.currency||0)>=c){ p.currency-=c; p.ducks=(p.ducks||1)+1; p.births=normBirths(p.births,p.ducks); p.births[p.ducks-1]=Date.now(); } return p; });   // newest duck starts its baby clock
+    } else { state.currency-=duckCost(); _births[state.duckCount]=Date.now(); setDuckCount(state.duckCount+1); this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
     return true;
   },
   buyVisitor:function(id){
@@ -329,8 +335,11 @@ function Duck(o){
   this.swimming=isWater(this.x,this.y); this.prevSwim=this.swimming; this.wakeT=0;
   this.drowsy=0; this.zzzT=rand(0.8,3.2);
   this.panicT=0; this.panicAng=0; this.friendDecided=false;
+  this.bornAt=o.bornAt||0;                 // 0 = always been a grown duck; else ms timestamp it was bought
+  this.adultness=this.isBaby()?0:1;        // start tiny if it's still within its baby window
   this.pickWander();
 }
+Duck.prototype.isBaby=function(){ return this.bornAt>0 && (Date.now()-this.bornAt)<BABY_MS; };
 Duck.prototype.pickWander=function(){
   var ang=Math.random()*Math.PI*2;
   var radius=24+Math.random()*Math.min(W,H)*0.22;
@@ -361,6 +370,7 @@ Duck.prototype.update=function(dt){
   this.swimming=isWater(this.x,this.y);
   if(this.swimming!==this.prevSwim){ spawnRipple(this.x,this.y,15); this.prevSwim=this.swimming; }
   this.stateT+=dt;
+  var adTarget=this.isBaby()?0:1; this.adultness+=(adTarget-this.adultness)*Math.min(1,dt*0.6);  // ease into adulthood when the baby window ends
 
   var tx,ty,maxSpeed;
   if(this.state==='seek'&&this.targetPellet){ tx=this.targetPellet.x; ty=this.targetPellet.y; maxSpeed=RUN; }
@@ -532,7 +542,8 @@ Duck.prototype.update=function(dt){
   else if(this.state==='wake'){ if(this.stateT>=this.stateDur) this.pickIdle(); }
 };
 Duck.prototype.draw=function(g){
-  var ds=depthScale(this.y), s=this.size*ds, p=this.pal, swim=this.swimming;
+  var baby=1-(this.adultness===undefined?1:this.adultness);   // 0 = grown, 1 = newborn duckling
+  var ds=depthScale(this.y), s=this.size*ds*(1-0.44*baby), p=this.pal, swim=this.swimming;
   g.save();
   g.translate(this.x,this.y);
 
@@ -545,10 +556,10 @@ Duck.prototype.draw=function(g){
   g.rotate(this.leanCur);
   g.scale(s,s);
 
-  var bodyRx=9.2,bodyRy=21.5,headR=7.8;
+  var bodyRx=9.2,bodyRy=21.5,headR=7.8*(1+0.30*baby);   // ducklings: big round head...
   var bodyCenterY=swim?-15:-26;
   var bodyTopY=bodyCenterY-bodyRy+5;
-  var headBaseX=1.8, headBaseY=bodyTopY-19;
+  var headBaseX=1.8, headBaseY=bodyTopY-19*(1-0.34*baby);  // ...on a short little neck
   var dip=this.headDip;
   var hx=headBaseX+dip*7;
   var hy=headBaseY+dip*(swim?36:21);
@@ -617,8 +628,9 @@ Duck.prototype.draw=function(g){
       g.strokeStyle=p.eye; g.lineWidth=1.1; g.lineCap='round';
       g.beginPath(); g.moveTo(ex-2,ey); g.quadraticCurveTo(ex,ey+1.4,ex+2,ey); g.stroke();
     } else {
-      g.fillStyle=p.eye; g.beginPath(); g.ellipse(ex,ey,2.3,2.5,0,0,Math.PI*2); g.fill();
-      g.fillStyle='rgba(255,255,255,0.92)'; g.beginPath(); g.ellipse(ex-0.7,ey-0.9,0.85,0.95,0,0,Math.PI*2); g.fill();
+      var er=1+0.22*baby;   // bigger, rounder baby eyes
+      g.fillStyle=p.eye; g.beginPath(); g.ellipse(ex,ey,2.3*er,2.5*er,0,0,Math.PI*2); g.fill();
+      g.fillStyle='rgba(255,255,255,0.92)'; g.beginPath(); g.ellipse(ex-0.7*er,ey-0.9*er,0.85*er,0.95*er,0,0,Math.PI*2); g.fill();
     }
   }
 
@@ -784,7 +796,7 @@ function makeDuckAt(i){
   var x=clamp(W*(0.12+0.76*((i*0.618033+0.21)%1)),30,W-30);
   var y=clamp(groundTop+(H-groundTop)*(0.30+0.62*((i*0.381966+0.13)%1)),groundTop+30,H-30);
   var size=0.88+((i*0.27+0.1)%1)*0.22;
-  return new Duck({x:x,y:y,pal:PALS[i%PALS.length],size:size,seed:rand(0,6.283)});
+  return new Duck({x:x,y:y,pal:PALS[i%PALS.length],size:size,seed:rand(0,6.283),bornAt:_births[i]||0});
 }
 function initDucks(){ state.ducks=[]; for(var i=0;i<state.duckCount;i++) state.ducks.push(makeDuckAt(i)); }
 function setDuckCount(n){   // grow/shrink the flock to match the (shared) purchased count, leaving existing ducks be
