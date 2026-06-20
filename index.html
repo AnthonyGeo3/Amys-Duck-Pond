@@ -89,6 +89,9 @@ var ducksInit=false,running=true,last=0,hinted=false;
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
 var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0};
 
+// -- WEATHER STATE --
+var weather={loaded:false, isDay:1, rain:false};
+
 var RUN=98, WALK=27;
 
 // ---------- utils ----------
@@ -102,6 +105,21 @@ function shoreX(y){
   return shoreSeed.base + Math.sin(t*Math.PI*shoreSeed.freq+shoreSeed.phase)*shoreSeed.amp + (t-0.5)*shoreSeed.slope;
 }
 function isWater(x,y){return x<shoreX(y);}
+
+// ---------- weather sync ----------
+async function syncWeather() {
+  try {
+    var res = await fetch('https://api.open-meteo.com/v1/forecast?latitude=53.0456&longitude=-2.9755&current=is_day,weather_code&timezone=Europe%2FLondon');
+    var data = await res.json();
+    if(data && data.current) {
+      weather.isDay = data.current.is_day;
+      var wc = data.current.weather_code;
+      // WMO Codes: 51-67 and 80-82 mean drizzle/rain/showers
+      weather.rain = (wc >= 51 && wc <= 67) || (wc >= 80 && wc <= 82);
+      weather.loaded = true;
+    }
+  } catch(e) { console.log('Weather sync failed, keeping defaults.', e); }
+}
 
 // ---------- duck palettes ----------
 var PALS=[
@@ -490,11 +508,10 @@ function initReeds(){
     state.reeds.push({x:shoreX(y)+rand(-5,3),y:y,h:(28+Math.random()*30)*depthScale(y),phase:rand(0,6.283),lean:rand(-0.2,0.2),hasCattail:Math.random()<0.6});
   }
 }
-var DUCK_COUNT=8;   // <-- number of ducks. Change this to add or remove ducks.
+var DUCK_COUNT=8;   
 function initDucks(){
   state.ducks=[];
   for(var i=0;i<DUCK_COUNT;i++){
-    // even, non-gridded scatter using a golden-ratio sequence; colours cycle through PALS
     var x=clamp(W*(0.12+0.76*((i*0.618033+0.21)%1)),30,W-30);
     var y=clamp(groundTop+(H-groundTop)*(0.30+0.62*((i*0.381966+0.13)%1)),groundTop+30,H-30);
     var size=0.88+((i*0.27+0.1)%1)*0.22;
@@ -533,7 +550,7 @@ function assignFood(){
     for(i=0;i<pellets.length;i++){
       var pe=pellets[i];
       var dd=Math.hypot(pe.x-dk.x,pe.y-dk.y);
-      var score=dd+pe.claims*(0.1*minS); // Assuming you changed the 0.6 to 0.1 here!
+      var score=dd+pe.claims*(0.1*minS);
       if(score<bestScore){ bestScore=score; best=pe; bestDist=dd; }
     }
     if(best && best.claims>=4 && bestDist>0.22*minS) best=null;
@@ -574,10 +591,22 @@ function updateRipples(dt){
 function updateClouds(dt){
   for(var i=0;i<state.clouds.length;i++){ var c=state.clouds[i]; c.x+=c.sp*dt; if(c.x>W+90) c.x=-90; }
 }
+
 function update(dt){
   assignFood();
   for(var i=0;i<state.ducks.length;i++) state.ducks[i].update(dt);
   updatePellets(dt); updateParticles(dt); updateRipples(dt); updateClouds(dt);
+
+  // Raindrop ripples on the water
+  if (weather.loaded && weather.rain) {
+    if (Math.random() < dt * 15) { // Roughly 15 little splashes a second
+      var rx = rand(0, W);
+      var ry = rand(groundTop, H);
+      if (isWater(rx, ry)) {
+        spawnRipple(rx, ry, rand(4, 10)); 
+      }
+    }
+  }
 }
 
 // ---------- drawing ----------
@@ -711,6 +740,27 @@ function drawParticles(g){
   }
   g.globalAlpha=1;
 }
+function drawWeatherOverlay(g){
+  if(!weather.loaded) return;
+  
+  // Night overlay
+  if(weather.isDay === 0){
+    g.fillStyle = 'rgba(10, 20, 45, 0.4)';
+    g.fillRect(0,0,W,H);
+  }
+  
+  // Rain streaks
+  if(weather.rain){
+    g.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    g.lineWidth = 1;
+    g.beginPath();
+    for(var i=0; i<60; i++){
+      var x = rand(0, W+50), y = rand(0, H);
+      g.moveTo(x, y); g.lineTo(x-3, y+9);
+    }
+    g.stroke();
+  }
+}
 function drawVignette(g){ g.fillStyle=vignetteGrad; g.fillRect(0,0,W,H); }
 
 function render(){
@@ -721,6 +771,7 @@ function render(){
   drawRipples(ctx);
   drawScene(ctx);
   drawParticles(ctx);
+  drawWeatherOverlay(ctx); // Added weather visual effects
   drawVignette(ctx);
 }
 
@@ -926,6 +977,7 @@ document.addEventListener('visibilitychange',function(){
 
 resize();
 updateSndIcon();
+syncWeather(); // Fetch the real world weather!
 last=performance.now();
 requestAnimationFrame(frame);
 requestAnimationFrame(function(){ canvas.classList.add('show'); });
