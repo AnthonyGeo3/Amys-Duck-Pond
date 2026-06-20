@@ -146,7 +146,7 @@ var ducksInit=false,running=true,last=0,hinted=false;
 
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
 var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null,
-  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90,chased:null,friend:null};
+  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90,chased:null,friend:null,dfChaser:null,dfTarget:null,frogChaser:null,frogTarget:null};
 // Seconds of no feeding (and no pellets left) before the flock falls asleep — re-rolled in this range each feed.
 var SLEEP_MIN=60, SLEEP_MAX=120;
 function rollSleepDelay(){ state.sleepDelay=rand(SLEEP_MIN,SLEEP_MAX); }
@@ -257,6 +257,23 @@ Duck.prototype.update=function(dt){
     tx=clamp(this.x+bx*150,16,W-16); ty=clamp(this.y+by*150,groundTop+16,H-16);
     maxSpeed=RUN*1.02;
   }
+  else if(this.state==='chaseFly'){
+    // hopelessly chase a dragonfly (it's far quicker; the chase logic times out in manageVisitor)
+    var ft=this.chaseTarget||{x:this.x,y:this.y};
+    tx=ft.x; ty=clamp(ft.y,groundTop+14,H-14); maxSpeed=RUN;
+  }
+  else if(this.state==='curious'){
+    // waddle over to inspect the frog
+    var fp=state.frogTarget||{x:this.x,y:this.y};
+    tx=fp.x; ty=clamp(fp.y,groundTop+16,H-16); maxSpeed=WALK*1.15;
+  }
+  else if(this.state==='frogShy'){
+    // startled when it suddenly hops: scurry the other way for a moment
+    this.shyT-=dt;
+    var fp2=state.frogTarget||{x:this.x,y:this.y};
+    var ax=this.x-fp2.x, ay=this.y-fp2.y, al=Math.hypot(ax,ay)||1;
+    tx=clamp(this.x+ax/al*60,16,W-16); ty=clamp(this.y+ay/al*60,groundTop+16,H-16); maxSpeed=RUN*0.92;
+  }
   else if(this.state==='visit'){
     // amble over to a friendly spot near the guest and mill about happily
     var fr=state.friend||{x:this.x,y:this.y};
@@ -341,6 +358,10 @@ Duck.prototype.update=function(dt){
     this.pattering=false;
     this.wingFlap=Math.sin(this.walkPhase*3+this.seed)*0.42; // flapping for dear life
     this.hop=Math.abs(Math.sin(this.walkPhase*2.6))*2.0;
+  } else if(this.state==='frogShy'){
+    this.pattering=false;
+    this.wingFlap=Math.sin(this.walkPhase*3+this.seed)*0.34; // a startled little flutter
+    this.hop=Math.abs(Math.sin(this.walkPhase*2.6))*1.4;
   } else if(this.state==='huddle'){
     this.pattering=false;
     var fl=Math.max(state.scare||0, this.panicT>0?0.95:0);
@@ -664,7 +685,7 @@ function assignFood(){
   for(i=0;i<pellets.length;i++) pellets[i].claims=0;
   for(var d=0;d<state.ducks.length;d++){
     dk=state.ducks[d];
-    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake'||dk.state==='huddle'||dk.state==='flee'||dk.state==='visit') continue;
+    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake'||dk.state==='huddle'||dk.state==='flee'||dk.state==='visit'||dk.state==='chaseFly'||dk.state==='curious'||dk.state==='frogShy') continue;
     var best=null,bestScore=Infinity,bestDist=0;
     for(i=0;i<pellets.length;i++){
       var pe=pellets[i];
@@ -714,7 +735,7 @@ function updateClouds(dt){
 
 function manageSleep(){
   var ducks=state.ducks, i, d;
-  if(state.alarm||state.friend) return; // a visitor has the flock's attention; no napping
+  if(state.alarm||state.friend||state.dfChaser||state.frogChaser) return; // a visitor has the flock's attention; no napping
   if(state.sleeping){
     // Any fresh food wakes the whole flock.
     if(state.pellets.length>0){
@@ -764,13 +785,18 @@ function spookFlock(cat){ // a pounce just landed: send every duck scarpering in
 var VISITORS=[
   { name:'Ginger cat', make:function(){ return new Cat(); } },
   { name:'Koi fish',   make:function(){ return new Koi(); } },
-  { name:'Red panda',  make:function(){ return new RedPanda(); } }
+  { name:'Red panda',  make:function(){ return new RedPanda(); } },
+  { name:'Stork',      make:function(){ return new Stork(); } },
+  { name:'Dragonflies',make:function(){ return new Dragonfly(); } },
+  { name:'Frogs',      make:function(){ return new FrogFamily(); } }
 ];
 // Summon a specific guest right now (used by the shop), clearing any current one first.
 function summonVisitor(maker){
   if(state.visitor){
     if(state.visitor.spooks||state.visitor.befriends){ for(var i=0;i<state.ducks.length;i++){ state.ducks[i].pickIdle(); state.ducks[i].friendDecided=false; } }
-    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null;
+    if(state.dfChaser) state.dfChaser.pickIdle();
+    if(state.frogChaser) state.frogChaser.pickIdle();
+    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null;
   }
   state.visitor=maker();
   scheduleNextVisitor();
@@ -804,10 +830,40 @@ function manageVisitor(dt){
         if(dk.state==='visit'||dk.friendDecided) continue;
         if(Math.hypot(dk.x-vf.x,dk.y-vf.y)<130){ dk.friendDecided=true; if(Math.random()<0.72){ dk.state='visit'; dk.huddleSlot=i; dk.targetPellet=null; } }
       }
+    } else if(state.visitor.lures){
+      // Dragonflies: one idle duck takes the bait and chases a fly; it can never catch it and soon loses interest.
+      var sw=state.visitor;
+      if(state.dfChaser){
+        state.dfChaser.chaseT-=dt;
+        if(state.dfChaser.chaseT<=0 || !state.dfTarget || sw.lifeT>sw.life){ state.dfChaser.pickIdle(); state.dfChaser=null; state.dfTarget=null; }
+      } else if(sw.lifeT<sw.life-2){
+        for(var fi=0;fi<sw.flies.length && !state.dfChaser;fi++){ var f=sw.flies[fi];
+          for(var di=0;di<state.ducks.length;di++){ var dk=state.ducks[di];
+            if(dk.state!=='wander'&&dk.state!=='pause'&&dk.state!=='peck') continue;  // only a duck that's just pottering about
+            if(Math.hypot(dk.x-f.x,dk.y-f.y)<64 && Math.random()<dt*1.6){ dk.state='chaseFly'; dk.chaseTarget=f; dk.chaseT=rand(2.5,5.5); dk.targetPellet=null; state.dfChaser=dk; state.dfTarget=f; break; }
+          }
+        }
+      }
+    } else if(state.visitor.curious){
+      // Frogs: one nosy duck waddles up; when it gets close the frog leaps away and the duck startles back, over and over.
+      var fam=state.visitor, parent=fam.parent; state.frogTarget=parent;
+      if(state.frogChaser){
+        var fd=state.frogChaser; fd.curiosityT-=dt;
+        if(fd.curiosityT<=0 || fam.lifeT>fam.life){ fd.pickIdle(); state.frogChaser=null; state.frogTarget=null; }
+        else if(fd.state==='curious'){ if(Math.hypot(fd.x-parent.x,fd.y-parent.y)<40){ fam.startle(fd); fd.state='frogShy'; fd.shyT=rand(0.6,1.2); } }
+        else if(fd.state==='frogShy'){ if(fd.shyT<=0) fd.state='curious'; }
+      } else if(fam.lifeT<fam.life-3){
+        for(var ci=0;ci<state.ducks.length;ci++){ var cd=state.ducks[ci];
+          if(cd.state!=='wander'&&cd.state!=='pause'&&cd.state!=='peck') continue;
+          if(Math.hypot(cd.x-parent.x,cd.y-parent.y)<140 && Math.random()<dt*0.7){ cd.state='curious'; cd.curiosityT=rand(7,13); cd.targetPellet=null; state.frogChaser=cd; state.frogTarget=parent; break; }
+        }
+      }
     }
     if(state.visitor.done){
       var wasReact=state.visitor.spooks||state.visitor.befriends;
-      state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null;
+      if(state.dfChaser){ state.dfChaser.pickIdle(); }
+      if(state.frogChaser){ state.frogChaser.pickIdle(); }
+      state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null;
       if(wasReact){ for(var j=0;j<state.ducks.length;j++){ state.ducks[j].pickIdle(); state.ducks[j].friendDecided=false; } state.lastFeed=state.time; rollSleepDelay(); }
       scheduleNextVisitor();
     }
@@ -987,6 +1043,152 @@ RedPanda.prototype.update=function(dt){
   this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(1.8,4.5); }
 };
 
+// ----- Stork: glides in from the sky, lands at the waterside, fishes a while, then flies off -----
+function Stork(){
+  this.kind='stork'; this.spooks=false; this.done=false;
+  this.landY=clamp(groundTop+(H-groundTop)*rand(0.30,0.72),groundTop+70,H-90);
+  this.landX=clamp(shoreX(this.landY)-5,30,W-30);          // right at the water's edge
+  var side=Math.random()<0.5?-1:1;
+  this.x=clamp(this.landX+side*rand(90,170),16,W-16); this.y=-50;   // start above the screen
+  this.facing=this.landX>this.x?1:-1; this.vx=0; this.vy=0; this.speed=0;
+  this.state='flyIn'; this.stateT=0; this.lifeT=0; this.life=rand(13,22);
+  this.flap=rand(0,6.283); this.wing=1; this.headDip=0; this.peckT=rand(0.5,1.3); this.blink=0; this.blinkT=rand(2,5);
+}
+Stork.prototype.update=function(dt){
+  this.stateT+=dt;
+  var maxSpeed=0, tx=this.tx, ty=this.ty, flapRate=8, wingTarget=1;
+  if(this.state==='flyIn'){ tx=this.landX; ty=this.landY; maxSpeed=120; flapRate=8; wingTarget=1;
+    if(Math.hypot(tx-this.x,ty-this.y)<10){ this.state='land'; this.stateT=0; this.facing=-1; }
+  } else if(this.state==='land'){ maxSpeed=0; wingTarget=0; flapRate=5; this.facing=-1;
+    if(this.stateT>0.5){ this.state='peck'; this.stateT=0; }
+  } else if(this.state==='peck'){ maxSpeed=0; wingTarget=0; this.facing=-1; this.lifeT+=dt;
+    this.peckT-=dt;
+    if(this.peckT<=0){ this.peckT=rand(1.1,2.6); this.peckPhase=0.0001; }       // start a peck
+    if(this.peckPhase>0){ this.peckPhase+=dt; var pr=clamp(this.peckPhase/0.55,0,1); this.headDip=Math.sin(pr*Math.PI);
+      if(pr>0.46 && pr<0.56) spawnRipple(shoreX(this.y)-8,this.y,11);            // beak hits the water
+      if(pr>=1){ this.peckPhase=0; this.headDip=0; } }
+    if(this.lifeT>this.life){ this.state='flyOut'; this.stateT=0; this.tx=clamp(this.x+(this.x<W*0.5?-1:1)*240,-80,W+80); this.ty=-70; }
+  } else if(this.state==='flyOut'){ tx=this.tx; ty=this.ty; maxSpeed=130; flapRate=9; wingTarget=1;
+    if(this.y<-50) this.done=true;
+  }
+  var dx=tx-this.x, dy=ty-this.y, dd=Math.hypot(dx,dy)||1;
+  var desVx=0,desVy=0; if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
+  var steer=Math.min(1,dt*4);
+  this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  this.x+=this.vx*dt; this.y+=this.vy*dt;
+  this.speed=Math.hypot(this.vx,this.vy);
+  if(Math.abs(this.vx)>6 && (this.state==='flyIn'||this.state==='flyOut')) this.facing=this.vx>0?1:-1;
+  this.flap+=dt*flapRate;
+  this.wing+=(wingTarget-this.wing)*Math.min(1,dt*8);
+  this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(2,5); }
+};
+
+// ----- Dragonflies: a couple of them dart over the pond; one duck may give chase (and never wins) -----
+function overWaterPoint(){
+  for(var k=0;k<12;k++){ var y=rand(groundTop+20,H-30), edge=shoreX(y)-12; if(edge>34) return {x:rand(16,edge),y:y}; }
+  return {x:40,y:groundTop+(H-groundTop)*0.5};
+}
+function makeDfly(){
+  var p=overWaterPoint(), t=overWaterPoint();
+  return { x:p.x,y:p.y,vx:0,vy:0,facing:1,speed:0,wing:rand(0,6.28),tx:t.x,ty:t.y,retargetT:rand(0.4,1.1),hover:0,
+    col: Math.random()<0.5 ? {body:'#2bb6a0',dark:'#1d7d6f'} : {body:'#3f7fd6',dark:'#2a589a'} };
+}
+function updateDfly(f,dt,leaving){
+  f.wing+=dt*46;
+  var maxSpeed=140;
+  if(f.hover>0){ f.hover-=dt; maxSpeed=12; }
+  if(leaving){ f.tx=f.x; f.ty=-60; maxSpeed=175; f.hover=0; }
+  else if(f===state.dfTarget && state.dfChaser){            // being chased: dart away, fast
+    var c=state.dfChaser, ax=f.x-c.x, ay=f.y-c.y, al=Math.hypot(ax,ay)||1;
+    f.tx=clamp(f.x+ax/al*80+rand(-18,18),14,W-14); f.ty=clamp(f.y+ay/al*80+rand(-18,18),groundTop+14,H-22); maxSpeed=195; f.hover=0;
+  } else if(f.hover<=0){                                    // wander erratically over the water
+    f.retargetT-=dt;
+    if(f.retargetT<=0 || Math.hypot(f.tx-f.x,f.ty-f.y)<12){ var p=overWaterPoint(); f.tx=p.x; f.ty=p.y; f.retargetT=rand(0.4,1.2); if(Math.random()<0.3) f.hover=rand(0.3,0.8); }
+  }
+  var dx=f.tx-f.x, dy=f.ty-f.y, dd=Math.hypot(dx,dy)||1;
+  var st=Math.min(1,dt*8);                                  // snappy, darty acceleration
+  f.vx+=(dx/dd*maxSpeed-f.vx)*st; f.vy+=(dy/dd*maxSpeed-f.vy)*st;
+  f.x+=f.vx*dt; f.y+=f.vy*dt; f.x=clamp(f.x,8,shoreX(f.y)-6); f.y=clamp(f.y,groundTop+8,H-12); // stays over the pond
+  f.speed=Math.hypot(f.vx,f.vy); if(Math.abs(f.vx)>4) f.facing=f.vx>0?1:-1;
+}
+function Dragonfly(){
+  this.kind='dragonfly'; this.spooks=false; this.lures=true; this.done=false;
+  this.flies=[makeDfly(), makeDfly()];
+  this.life=rand(18,30); this.lifeT=0; this.y=this.flies[0].y;
+}
+Dragonfly.prototype.update=function(dt){
+  this.lifeT+=dt;
+  var leaving=this.lifeT>this.life, sy=0, allGone=true;
+  for(var i=0;i<this.flies.length;i++){ var f=this.flies[i]; updateDfly(f,dt,leaving); sy+=f.y; if(f.y>-40) allGone=false; }
+  this.y=sy/this.flies.length;
+  if(leaving && allGone) this.done=true;
+};
+
+// ----- Frogs: a big one hops around the waterside with a few babies hopping behind in a line -----
+function makeFrog(x,y,size){
+  return { x:x,y:y,z:0,facing:1,size:size,squash:1, hopping:false,hopT:0,hopDur:0.34,fromX:x,fromY:y,toX:x,toY:y,hopH:0,restT:rand(0.2,0.7),blink:0,blinkT:rand(1.5,4) };
+}
+function updateFrog(f,dt,leader,target){
+  f.blink-=dt; f.blinkT-=dt; if(f.blinkT<=0){ f.blink=0.1; f.blinkT=rand(1.6,4.5); }
+  if(f.hopping){
+    f.hopT+=dt; var u=clamp(f.hopT/f.hopDur,0,1);
+    f.x=lerp(f.fromX,f.toX,u); f.y=lerp(f.fromY,f.toY,u);
+    f.z=Math.sin(u*Math.PI)*f.hopH;
+    f.squash=1-Math.sin(u*Math.PI)*0.16;                 // stretch tall in mid-air
+    if(u>=1){ f.hopping=false; f.z=0; f.squash=1.3; f.restT=rand(0.22,0.6); }  // landing splat
+  } else {
+    if(f.squash>1) f.squash=Math.max(1,f.squash-dt*3.4); else if(f.squash<1) f.squash=Math.min(1,f.squash+dt*3.4);
+    f.restT-=dt;
+    if(f.restT<=0){
+      var gx,gy,go=false, step;
+      if(leader){ var dx=leader.x-f.x, dy=leader.y-f.y, d=Math.hypot(dx,dy)||1;
+        if(d>30){ step=Math.min(18+10*f.size, d-22); gx=f.x+dx/d*step; gy=f.y+dy/d*step; go=step>4; }
+      } else if(target){ var dx=target.x-f.x, dy=target.y-f.y, d=Math.hypot(dx,dy)||1;
+        if(d>8){ step=Math.min(24,d); gx=f.x+dx/d*step; gy=f.y+dy/d*step; go=true; }
+      }
+      if(go){ f.fromX=f.x; f.fromY=f.y; f.toX=clamp(gx,12,W-12); f.toY=clamp(gy,groundTop+14,H-14);
+        f.hopH=7+f.size*6; f.hopDur=0.3+0.07*f.size; f.hopping=true; f.hopT=0;
+        if(Math.abs(f.toX-f.fromX)>1) f.facing=f.toX>f.fromX?1:-1; }
+      else f.restT=0.12;
+    }
+  }
+}
+function FrogFamily(){
+  this.kind='frog'; this.spooks=false; this.curious=true; this.done=false;
+  this.life=rand(20,34); this.lifeT=0;
+  var y=clamp(groundTop+(H-groundTop)*rand(0.32,0.74),groundTop+60,H-70);
+  var sx=clamp(shoreX(y)+rand(8,34),40,W-40);
+  this.parent=makeFrog(sx,y,1.0); this.parent.facing=Math.random()<0.5?1:-1;
+  this.babies=[]; for(var i=0;i<3;i++) this.babies.push(makeFrog(sx-this.parent.facing*(i+1)*20,y,0.5));
+  this.pickTarget(); this.y=y;
+}
+FrogFamily.prototype.pickTarget=function(){
+  var y=clamp(this.parent.y+rand(-130,130),groundTop+44,H-44);
+  this.tx=clamp(shoreX(y)+rand(-14,40),26,W-30); this.ty=y;
+};
+FrogFamily.prototype.startle=function(duck){ // a big leap away from the nosy duck
+  var p=this.parent, ax=p.x-duck.x, ay=p.y-duck.y, al=Math.hypot(ax,ay)||1;
+  p.fromX=p.x; p.fromY=p.y;
+  p.toX=clamp(p.x+ax/al*32,12,W-12); p.toY=clamp(p.y+ay/al*32,groundTop+14,H-14);
+  p.hopH=16; p.hopDur=0.32; p.hopping=true; p.hopT=0;
+  if(Math.abs(p.toX-p.fromX)>1) p.facing=p.toX>p.fromX?1:-1;
+  this.tx=clamp(p.x+ax/al*95,26,W-30); this.ty=clamp(p.y+ay/al*95,groundTop+44,H-44); // keep moving off
+};
+FrogFamily.prototype.update=function(dt){
+  this.lifeT+=dt; var leaving=this.lifeT>this.life;
+  var target = leaving ? {x:shoreX(this.parent.y)-30, y:this.parent.y} : {x:this.tx,y:this.ty};
+  updateFrog(this.parent,dt,null,target);
+  if(!leaving && !this.parent.hopping && Math.hypot(this.tx-this.parent.x,this.ty-this.parent.y)<16) this.pickTarget();
+  var leader=this.parent;
+  for(var i=0;i<this.babies.length;i++){ updateFrog(this.babies[i],dt,leader,null); leader=this.babies[i]; }
+  this.y=this.parent.y;
+  if(leaving && isWater(this.parent.x,this.parent.y)){
+    spawnRipple(this.parent.x,this.parent.y,15);
+    for(var b=0;b<this.babies.length;b++) spawnRipple(this.babies[b].x,this.babies[b].y,9);
+    this.done=true;
+  }
+};
+
 function update(dt){
   manageVisitor(dt);
   manageSleep();
@@ -1112,7 +1314,77 @@ function drawReed(g,rd){
     g.strokeStyle='#5f923c'; g.lineWidth=1; g.beginPath(); g.moveTo(tx,ty); g.lineTo(tx+sway*0.08,ty-rd.h*0.14); g.stroke();
   }
 }
-function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); }
+function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); }
+function drawFrogFamily(g,fam){
+  var all=fam.babies.concat([fam.parent]); all.sort(function(a,b){return a.y-b.y;});
+  for(var i=0;i<all.length;i++) drawFrog(g,all[i]);
+}
+function drawFrog(g,f){
+  var ds=depthScale(f.y), s=ds*(0.62+f.size*0.5), sq=f.squash||1, z=f.z||0;
+  var P={body:'#6cbf4a',dark:'#4f9c34',belly:'#d2e9a6',eye:'#f4f0df',pupil:'#1f2a16'};
+  var shAlpha=0.14/(1+z*0.05), shScale=1/(1+z*0.03);
+  g.save(); g.translate(f.x,f.y);
+  g.fillStyle='rgba(45,55,45,'+shAlpha.toFixed(3)+')'; g.beginPath(); g.ellipse(0,0,11*s*shScale,3.4*s*shScale,0,0,Math.PI*2); g.fill();
+  g.translate(0,-z); g.scale(f.facing,1); g.scale(s,s);
+  var bw=11*sq, bh=8/sq, ext=clamp(z/8,0,1);
+  // back haunch + leg (behind body), extends when airborne
+  g.fillStyle=P.dark;
+  g.beginPath(); g.ellipse(-6,-bh*0.2,5.4,4,-0.5+ext*0.5,0,Math.PI*2); g.fill();
+  g.strokeStyle=P.dark; g.lineWidth=2.6; g.lineCap='round';
+  g.beginPath(); g.moveTo(-7,-bh*0.1); g.quadraticCurveTo(-12-ext*6,2+ext*3,-15-ext*7,4+ext*4); g.stroke();
+  g.fillStyle=P.dark; g.beginPath(); g.ellipse(-15-ext*7,4+ext*4,2.2,1.4,0.3,0,Math.PI*2); g.fill();
+  // body
+  g.fillStyle=P.body; g.beginPath(); g.ellipse(0,-bh*0.3,bw,bh,0,0,Math.PI*2); g.fill();
+  // belly
+  g.fillStyle=P.belly; g.beginPath(); g.ellipse(2.5,bh*0.35,bw*0.58,bh*0.5,0,0,Math.PI*2); g.fill();
+  // a couple of darker spots
+  g.fillStyle=P.dark; g.globalAlpha=0.7;
+  g.beginPath(); g.ellipse(-3,-bh*0.55,1.5,1.2,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(1.5,-bh*0.7,1.3,1.0,0,0,Math.PI*2); g.fill(); g.globalAlpha=1;
+  // front leg (small)
+  g.strokeStyle=P.dark; g.lineWidth=1.8; g.lineCap='round';
+  g.beginPath(); g.moveTo(6,bh*0.35); g.lineTo(9,bh*0.7+1); g.stroke();
+  // eyes (two bumps on top, facing forward)
+  var ey=-bh-1.0, closed=f.blink>0;
+  function eye(ox){ g.fillStyle=P.body; g.beginPath(); g.ellipse(ox,ey,2.7,2.9,0,0,Math.PI*2); g.fill();
+    if(closed){ g.strokeStyle=P.dark; g.lineWidth=0.9; g.beginPath(); g.moveTo(ox-1.6,ey); g.quadraticCurveTo(ox,ey+1,ox+1.6,ey); g.stroke(); }
+    else { g.fillStyle=P.eye; g.beginPath(); g.ellipse(ox+0.4,ey,1.7,2.0,0,0,Math.PI*2); g.fill();
+      g.fillStyle=P.pupil; g.beginPath(); g.ellipse(ox+0.7,ey+0.1,0.95,1.3,0,0,Math.PI*2); g.fill(); } }
+  eye(2.4); eye(6.2);
+  // wide smile
+  g.strokeStyle=P.dark; g.lineWidth=1; g.lineCap='round';
+  g.beginPath(); g.moveTo(3,-bh*0.05); g.quadraticCurveTo(7.5,-bh*0.05+2.6,10.5,-bh*0.05-0.4); g.stroke();
+  g.restore();
+}
+function drawDragonfly(g,sw){ for(var i=0;i<sw.flies.length;i++) drawDfly(g,sw.flies[i]); }
+function drawDfly(g,f){
+  var ds=depthScale(f.y), s=ds*0.92, ang=Math.atan2(f.vy,f.vx);
+  // faint shadow on the water below
+  g.save(); g.translate(f.x,f.y+5*ds); g.scale(1,0.4); g.fillStyle='rgba(30,60,70,0.10)';
+  g.beginPath(); g.arc(0,0,7*s,0,Math.PI*2); g.fill(); g.restore();
+  g.save(); g.translate(f.x,f.y); g.rotate(ang); g.scale(s,s);
+  var wf=0.5+0.5*Math.sin(f.wing);                 // 0..1 wing beat
+  g.fillStyle='rgba(205,235,240,0.5)';
+  // front wing pair
+  g.save(); g.translate(3,0);
+    g.beginPath(); g.ellipse(0,-4-wf*2,6.5,2.2,-0.35,0,Math.PI*2); g.fill();
+    g.beginPath(); g.ellipse(0,4+wf*2,6.5,2.2,0.35,0,Math.PI*2); g.fill();
+  g.restore();
+  // rear wing pair
+  g.save(); g.translate(-3,0);
+    g.beginPath(); g.ellipse(0,-4-wf*1.6,5.6,2,-0.35,0,Math.PI*2); g.fill();
+    g.beginPath(); g.ellipse(0,4+wf*1.6,5.6,2,0.35,0,Math.PI*2); g.fill();
+  g.restore();
+  // long thin abdomen
+  g.strokeStyle=f.col.body; g.lineWidth=2.2; g.lineCap='round';
+  g.beginPath(); g.moveTo(4,0); g.lineTo(-11,0); g.stroke();
+  g.strokeStyle=f.col.dark; g.lineWidth=2.2;
+  g.beginPath(); g.moveTo(-4,0); g.lineTo(-11,0); g.stroke();           // darker tail segments
+  // thorax + head
+  g.fillStyle=f.col.body; g.beginPath(); g.ellipse(4.5,0,2.8,2.4,0,0,Math.PI*2); g.fill();
+  g.fillStyle='rgba(25,45,45,0.85)'; g.beginPath(); g.ellipse(7.4,0,1.9,2.0,0,0,Math.PI*2); g.fill();  // big eyes/head
+  g.restore();
+}
 function pandaLeg(g,hipX,hipY,phase,amt,color,w){
   var footX=hipX+Math.sin(phase)*4*amt, footY=-Math.max(0,Math.sin(phase+Math.PI/2))*3*amt;
   g.strokeStyle=color; g.lineWidth=w; g.lineCap='round';
@@ -1171,6 +1443,62 @@ function drawPanda(g,p){
   if(p.blink>0){ g.strokeStyle=P.eye; g.lineWidth=1; g.beginPath(); g.moveTo(ex-2,ey); g.quadraticCurveTo(ex,ey+1.2,ex+2,ey); g.stroke(); }
   else { g.fillStyle=P.eye; g.beginPath(); g.ellipse(ex,ey,2.1,2.3,0,0,Math.PI*2); g.fill();
     g.fillStyle='rgba(255,255,255,0.85)'; g.beginPath(); g.ellipse(ex-0.6,ey-0.8,0.7,0.8,0,0,Math.PI*2); g.fill(); }
+  g.restore();
+}
+function drawStork(g,s){
+  var ds=depthScale(s.y), sc=ds*1.0, flying=(s.state==='flyIn'||s.state==='flyOut');
+  var P={body:'#f5f2ec',shade:'#ded9cc',black:'#33323a',beak:'#e3782c',leg:'#dd5a30',eye:'#241c16'};
+  g.save(); g.translate(s.x,s.y);
+  if(!flying){ g.fillStyle='rgba(45,55,45,0.12)'; g.beginPath(); g.ellipse(0,0,12*sc,3.6*sc,0,0,Math.PI*2); g.fill(); }
+  g.scale(s.facing,1); g.scale(sc,sc);
+  if(flying){
+    var wf=Math.sin(s.flap), by=-6;
+    g.strokeStyle=P.leg; g.lineWidth=1.6; g.lineCap='round';
+    g.beginPath(); g.moveTo(-10,by+2); g.lineTo(-22,by+6); g.moveTo(-10,by+3); g.lineTo(-22,by+9); g.stroke();
+    // far wing
+    g.save(); g.translate(-2,by-2); g.rotate(-0.5-wf*0.5);
+      g.fillStyle=P.shade; g.beginPath(); g.moveTo(0,0); g.quadraticCurveTo(-14,-6,-30,-2); g.quadraticCurveTo(-16,4,0,4); g.closePath(); g.fill();
+      g.fillStyle=P.black; g.beginPath(); g.moveTo(-22,-2); g.quadraticCurveTo(-30,-3,-34,0); g.quadraticCurveTo(-28,2,-22,2); g.closePath(); g.fill();
+    g.restore();
+    // body
+    g.fillStyle=P.body; g.beginPath(); g.ellipse(0,by,13,6,0,0,Math.PI*2); g.fill();
+    // tail
+    g.beginPath(); g.moveTo(-12,by); g.lineTo(-18,by-2); g.lineTo(-18,by+2); g.closePath(); g.fill();
+    // neck + head forward
+    g.strokeStyle=P.body; g.lineWidth=4.4; g.lineCap='round';
+    g.beginPath(); g.moveTo(9,by-1); g.quadraticCurveTo(17,by-2,22,by-1); g.stroke();
+    g.fillStyle=P.body; g.beginPath(); g.ellipse(23,by-1,3.2,3,0,0,Math.PI*2); g.fill();
+    g.fillStyle=P.beak; g.beginPath(); g.moveTo(25,by-2.2); g.lineTo(38,by-0.5); g.lineTo(25,by+1); g.closePath(); g.fill();
+    g.fillStyle=P.eye; g.beginPath(); g.ellipse(24,by-2,0.9,0.9,0,0,Math.PI*2); g.fill();
+    // near wing (flapping)
+    g.save(); g.translate(0,by); g.rotate(0.4+wf*0.6);
+      g.fillStyle=P.body; g.beginPath(); g.moveTo(0,0); g.quadraticCurveTo(-14,8,-30,3); g.quadraticCurveTo(-16,-3,0,-2); g.closePath(); g.fill();
+      g.fillStyle=P.black; g.beginPath(); g.moveTo(-22,3); g.quadraticCurveTo(-31,3,-35,1); g.quadraticCurveTo(-28,-1,-22,-0.5); g.closePath(); g.fill();
+    g.restore();
+  } else {
+    var dip=s.headDip;
+    g.strokeStyle=P.leg; g.lineWidth=2.0; g.lineCap='round'; g.lineJoin='round';
+    g.beginPath(); g.moveTo(-2,-29); g.lineTo(-3,-15); g.lineTo(-6,0); g.stroke();
+    g.beginPath(); g.moveTo(3,-29); g.lineTo(2,-15); g.lineTo(4,0); g.stroke();
+    g.lineWidth=1.4; g.beginPath(); g.moveTo(-6,0); g.lineTo(-9,1); g.moveTo(4,0); g.lineTo(7,1); g.stroke();
+    // tail
+    g.fillStyle=P.body; g.beginPath(); g.moveTo(-10,-38); g.lineTo(-19,-40); g.lineTo(-16,-33); g.closePath(); g.fill();
+    g.fillStyle=P.black; g.beginPath(); g.moveTo(-15,-39); g.lineTo(-19,-40); g.lineTo(-16,-34); g.closePath(); g.fill();
+    // body
+    g.fillStyle=P.body; g.beginPath(); g.ellipse(0,-38,13,9,0,0,Math.PI*2); g.fill();
+    g.fillStyle=P.shade; g.beginPath(); g.ellipse(-2,-37,10,6.5,0,0,Math.PI*2); g.fill();
+    g.fillStyle=P.black; g.beginPath(); g.moveTo(-12,-37); g.quadraticCurveTo(-16,-36,-15,-31); g.quadraticCurveTo(-8,-33,-4,-35); g.closePath(); g.fill();
+    // neck + head (S-curve, dips down to fish)
+    var baseX=7, baseY=-44, hx=lerp(11,16,dip), hy=lerp(-58,-8,dip), midx=lerp(10,15,dip), midy=lerp(-52,-26,dip);
+    g.strokeStyle=P.body; g.lineWidth=4.6; g.lineCap='round';
+    g.beginPath(); g.moveTo(baseX,baseY); g.quadraticCurveTo(midx,midy,hx,hy); g.stroke();
+    g.fillStyle=P.body; g.beginPath(); g.ellipse(hx,hy,3.4,3.2,0,0,Math.PI*2); g.fill();
+    // beak (tapered triangle, rotates down as it pecks)
+    var ba=lerp(-0.12,1.15,dip), dirx=Math.cos(ba), diry=Math.sin(ba), nx=-diry, ny=dirx;
+    var bx0=hx+dirx*2, by0=hy+diry*2, btx=hx+dirx*15, bty=hy+diry*15;
+    g.fillStyle=P.beak; g.beginPath(); g.moveTo(bx0+nx*1.8,by0+ny*1.8); g.lineTo(btx,bty); g.lineTo(bx0-nx*1.8,by0-ny*1.8); g.closePath(); g.fill();
+    g.fillStyle=P.eye; g.beginPath(); g.ellipse(hx+1.2,hy-0.8,1.0,1.0,0,0,Math.PI*2); g.fill();
+  }
   g.restore();
 }
 function drawKoi(g,school){ for(var i=0;i<school.fish.length;i++) drawKoiFish(g,school.fish[i]); }
