@@ -15,6 +15,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Firebase (compat build = global `firebase`). Loaded before the app so the shared pond can sync;
+     if these fail (offline), the app falls back to per-device localStorage. -->
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
 <style>
   *{
     margin:0;
@@ -39,6 +44,19 @@
     position:absolute;top:calc(env(safe-area-inset-top,0px) + 16px);left:18px;
     color:rgba(38,80,76,.5);font-size:13px;font-weight:700;letter-spacing:.5px;
   }
+  #coin{
+    position:absolute;top:calc(env(safe-area-inset-top,0px) + 38px);left:16px;
+    display:flex;align-items:center;gap:7px;
+    background:rgba(255,255,255,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    box-shadow:0 4px 14px rgba(40,70,65,.16);border-radius:999px;padding:5px 12px 5px 7px;
+    color:#2c5450;font-weight:700;font-size:14px;pointer-events:none;
+  }
+  #coin .ic{
+    width:18px;height:18px;border-radius:50%;flex:0 0 auto;
+    background:radial-gradient(circle at 35% 32%, #ffe79a, #f3c33e 62%, #d9962a 100%);
+    box-shadow:inset 0 0 0 1.5px rgba(180,130,30,.45);
+  }
+  #coin .lbl{font-weight:500;font-size:11px;color:rgba(44,84,80,.62);letter-spacing:.3px;}
   #snd{
     position:absolute;top:calc(env(safe-area-inset-top,0px) + 12px);right:14px;
     width:42px;height:42px;border-radius:50%;border:none;
@@ -109,6 +127,7 @@
   <canvas id="scene"></canvas>
   <div id="ui">
     <div id="title">little duck pond</div>
+    <div id="coin"><span class="ic"></span><span id="coinVal">0</span><span class="lbl">Quacks</span></div>
     <button id="snd" aria-label="Enable gentle sounds"></button>
     <button id="shop" aria-label="Call a visitor">
       <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="10.5" r="2"/><circle cx="10.3" cy="6.8" r="2"/><circle cx="13.7" cy="6.8" r="2"/><circle cx="18" cy="10.5" r="2"/><path d="M12 11.2c-2.7 0-4.9 1.9-4.9 4 0 1.6 1.3 2.6 2.8 2.6.8 0 1.4-.3 2.1-.3s1.3.3 2.1.3c1.5 0 2.8-1 2.8-2.6 0-2.1-2.2-4-4.9-4z"/></svg>
@@ -137,6 +156,10 @@ var shopBtn=document.getElementById('shop');
 var shopModal=document.getElementById('shopModal');
 var shopList=document.getElementById('shopList');
 var shopClose=document.getElementById('shopClose');
+var coinVal=document.getElementById('coinVal');
+var coinLbl=document.querySelector('#coin .lbl');
+var _coinShown=-1;
+function updateCoinUI(){ var v=Math.floor(state.currency); if(v!==_coinShown){ _coinShown=v; coinVal.textContent=v.toLocaleString(); } }
 
 var W=0,H=0,DPR=1,groundTop=0;
 var bg=null,bgctx=null,pelletSprite=null,vignetteGrad=null,waterPath=null;
@@ -146,7 +169,58 @@ var ducksInit=false,running=true,last=0,hinted=false;
 
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
 var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null,
-  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90,chased:null,friend:null,dfChaser:null,dfTarget:null,frogChaser:null,frogTarget:null};
+  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90,chased:null,friend:null,dfChaser:null,dfTarget:null,frogChaser:null,frogTarget:null,
+  currency:0};
+
+// ---------- currency ("Quacks") ----------
+var CURRENCY='Quacks';          // rename here to taste
+var EARN_PER_PELLET=1;          // +1 each time a duck actually eats a pellet
+var EARN_PER_MINUTE=100;        // passive earnings while the app is open
+var SAVE_KEY='duckpond_save_v1';
+
+// Shared pond via Firebase Realtime Database. One record at ponds/shared that both phones subscribe to.
+// Earnings/spends are committed as atomic transactions so the two clients can't clobber each other.
+// localStorage is kept as an instant + offline fallback; if Firebase can't load, the app still works per-device.
+var FIREBASE_CONFIG={
+  apiKey:"AIzaSyDPN_5r1k8LquBbZU3BOaPL6vgO_KNphSI",
+  authDomain:"amys-duck-pond.firebaseapp.com",
+  databaseURL:"https://amys-duck-pond-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId:"amys-duck-pond",
+  storageBucket:"amys-duck-pond.firebasestorage.app",
+  messagingSenderId:"532496506242",
+  appId:"1:532496506242:web:c0ecf84d1a6adc7e03839b"
+};
+var POND_PATH='ponds/shared';
+var _fbRef=null, _pendingEarn=0, _remoteReady=false;
+function addCurrency(n){ state.currency+=n; if(_fbRef) _pendingEarn+=n; }   // accrue locally; commit the delta on save
+var store={
+  load:function(){
+    try{ var s=JSON.parse(localStorage.getItem(SAVE_KEY)||'{}'); if(typeof s.currency==='number') state.currency=s.currency; if(typeof s.pendingEarn==='number') _pendingEarn=s.pendingEarn; }catch(e){}
+    this._connect();
+  },
+  _connect:function(){
+    if(_fbRef || !window.firebase || !FIREBASE_CONFIG.databaseURL) return;   // offline / SDK missing => stay on localStorage
+    try{
+      if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+      firebase.auth().signInAnonymously().then(function(){
+        var ref=firebase.database().ref(POND_PATH+'/currency'); _fbRef=ref;
+        ref.on('value', function(snap){
+          var v=snap.val();
+          if(typeof v==='number'){ _remoteReady=true; state.currency=v+_pendingEarn; }   // shared total is the truth
+          else { ref.transaction(function(c){ return c==null?Math.round(state.currency):c; }, function(){ _remoteReady=true; }); _pendingEarn=0; }  // first run: seed it
+        });
+      }).catch(function(){ /* auth blocked => stay local */ });
+    }catch(e){ _fbRef=null; }
+  },
+  save:function(){
+    if(_fbRef && _remoteReady){ var d=Math.round(_pendingEarn); if(d!==0){ _pendingEarn-=d; _fbRef.transaction(function(c){ return (c||0)+d; }); } }
+    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn) })); }catch(e){}
+  },
+  spend:function(n){   // atomic deduct for the future shop (check balance before calling)
+    if(_fbRef && _remoteReady){ _fbRef.transaction(function(c){ return Math.max(0,(c||0)-n); }); }
+    else { state.currency=Math.max(0,state.currency-n); store.save(); }
+  }
+};
 // Seconds of no feeding (and no pellets left) before the flock falls asleep — re-rolled in this range each feed.
 var SLEEP_MIN=60, SLEEP_MAX=120;
 function rollSleepDelay(){ state.sleepDelay=rand(SLEEP_MIN,SLEEP_MAX); }
@@ -686,6 +760,7 @@ function eatPellet(pe,duck){
   for(var k=0;k<4;k++) spawnCrumb(pe.x,pe.y-2);
   if(Math.random()<0.28) spawnHeart(duck.x,duck.y-30*depthScale(duck.y));
   if(pe.inWater) spawnRipple(pe.x,pe.y,16);
+  addCurrency(EARN_PER_PELLET);   // earn only when a duck actually eats
   audio.nom();
 }
 function spawnCrumb(x,y){ state.particles.push({type:'crumb',x:x,y:y,vx:rand(-44,44),vy:rand(-60,-26),r:rand(0.9,1.8),t:0,life:rand(0.45,0.8)}); }
@@ -1128,19 +1203,29 @@ function makeDfly(){
 }
 function updateDfly(f,dt,leaving){
   f.wing+=dt*46;
+  if(!leaving && f===state.dfTarget && state.dfChaser){
+    // being chased: steer by heading with a capped turn rate, so it banks in smooth curves (never spins) and arcs toward open water
+    var c=state.dfChaser, ax=f.x-c.x, ay=f.y-c.y, al=Math.hypot(ax,ay)||1, dirx=ax/al, diry=ay/al;
+    var sx=shoreX(f.y), M=120, wx=0, wy=0;                   // wall avoidance starts early, so the turn is gradual
+    if(f.x-8<M) wx+=(M-(f.x-8))/M;
+    if(sx-f.x<M) wx-=(M-(sx-f.x))/M;
+    if(f.y-groundTop<M) wy+=(M-(f.y-groundTop))/M;
+    if(H-f.y<M) wy-=(M-(H-f.y))/M;
+    var ddx=dirx+wx*1.25, ddy=diry+wy*1.25;
+    var want=Math.atan2(ddy,ddx);
+    if(!f._flee){ f.heading=Math.atan2(f.vy,f.vx); f._flee=true; }   // seed heading from current motion on the first frame
+    var da=want-f.heading; while(da>Math.PI)da-=Math.PI*2; while(da<-Math.PI)da+=Math.PI*2;
+    f.heading+=clamp(da,-6.5*dt,6.5*dt);                     // limited turn rate => smooth banking
+    var sp=190; f.vx=Math.cos(f.heading)*sp; f.vy=Math.sin(f.heading)*sp;
+    f.x+=f.vx*dt; f.y+=f.vy*dt; f.x=clamp(f.x,8,shoreX(f.y)-6); f.y=clamp(f.y,groundTop+8,H-12);
+    f.speed=sp; if(Math.abs(f.vx)>4) f.facing=f.vx>0?1:-1;
+    return;
+  }
+  f._flee=false;
   var maxSpeed=140;
   if(f.hover>0){ f.hover-=dt; maxSpeed=12; }
   if(leaving){ f.tx=f.x; f.ty=-110; maxSpeed=180; f.hover=0; }   // zip straight up and off the screen
-  else if(f===state.dfTarget && state.dfChaser){            // being chased: flee fast, but deflect along walls so it never gets cornered
-    var c=state.dfChaser, ax=f.x-c.x, ay=f.y-c.y, al=Math.hypot(ax,ay)||1, dirx=ax/al, diry=ay/al;
-    var sx=shoreX(f.y), M=90, wx=0, wy=0;                   // wall repulsion (only near an edge)
-    if(f.x-8<M) wx+=(M-(f.x-8))/M;            // off the left wall
-    if(sx-f.x<M) wx-=(M-(sx-f.x))/M;          // off the shoreline (right edge of water)
-    if(f.y-groundTop<M) wy+=(M-(f.y-groundTop))/M;  // off the top
-    if(H-f.y<M) wy-=(M-(H-f.y))/M;            // off the bottom
-    var bx=dirx+wx*1.5, by=diry+wy*1.5, bl=Math.hypot(bx,by)||1;
-    f.tx=clamp(f.x+bx/bl*140,14,sx-10); f.ty=clamp(f.y+by/bl*140,groundTop+12,H-16); maxSpeed=195; f.hover=0;
-  } else if(f.hover<=0){                                    // wander erratically over the water
+  else if(f.hover<=0){                                    // wander erratically over the water
     f.retargetT-=dt;
     if(f.retargetT<=0 || Math.hypot(f.tx-f.x,f.ty-f.y)<12){ var p=overWaterPoint(); f.tx=p.x; f.ty=p.y; f.retargetT=rand(0.4,1.2); if(Math.random()<0.3) f.hover=rand(0.3,0.8); }
   }
@@ -1230,7 +1315,10 @@ FrogFamily.prototype.update=function(dt){
   }
 };
 
+var _saveT=0;
 function update(dt){
+  addCurrency(EARN_PER_MINUTE/60*dt);          // passive earnings while the app is open
+  _saveT-=dt; if(_saveT<=0){ store.save(); _saveT=5; }  // autosave every ~5s
   manageVisitor(dt);
   manageSleep();
   assignFood();
@@ -1781,6 +1869,7 @@ function render(){
   }
   
   drawVignette(ctx);
+  updateCoinUI();
 }
 
 // ---------- audio (optional, gentle) ----------
@@ -2046,11 +2135,11 @@ function resize(){
 window.addEventListener('resize',resize);
 window.addEventListener('orientationchange',function(){ setTimeout(resize,200); });
 document.addEventListener('visibilitychange',function(){
-  if(document.hidden){ running=false; audio.setActive(false); }
+  if(document.hidden){ running=false; audio.setActive(false); store.save(); }
   else { audio.setActive(true); if(!running){ running=true; last=performance.now(); requestAnimationFrame(frame); } }
 });
 // Extra safety nets for iOS screen-lock / app-switch (pagehide fires when Safari freezes the page).
-window.addEventListener('pagehide',function(){ audio.setActive(false); });
+window.addEventListener('pagehide',function(){ audio.setActive(false); store.save(); });
 window.addEventListener('pageshow',function(){ if(!document.hidden) audio.setActive(true); });
 window.addEventListener('blur',function(){ if(document.hidden) audio.setActive(false); });
 
@@ -2059,6 +2148,7 @@ updateSndIcon();
 syncWeather();
 rollSleepDelay();
 scheduleNextVisitor();
+store.load(); coinLbl.textContent=CURRENCY; updateCoinUI();   // currency: restore saved balance + label
 last=performance.now();
 requestAnimationFrame(frame);
 requestAnimationFrame(function(){ canvas.classList.add('show'); });
