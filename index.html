@@ -146,7 +146,7 @@ var ducksInit=false,running=true,last=0,hinted=false;
 
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
 var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null,
-  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90};
+  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90,chased:null};
 // Seconds of no feeding (and no pellets left) before the flock falls asleep — re-rolled in this range each feed.
 var SLEEP_MIN=60, SLEEP_MAX=120;
 function rollSleepDelay(){ state.sleepDelay=rand(SLEEP_MIN,SLEEP_MAX); }
@@ -248,18 +248,28 @@ Duck.prototype.update=function(dt){
   if(this.state==='seek'&&this.targetPellet){ tx=this.targetPellet.x; ty=this.targetPellet.y; maxSpeed=RUN; }
   else if(this.state==='wander'){ tx=this.tx; ty=this.ty; maxSpeed=WALK; }
   else if(this.state==='toRoost'){ tx=this.tx; ty=this.ty; maxSpeed=WALK*0.6; }
+  else if(this.state==='flee'){
+    // the unlucky duck the cat singled out: sprint away (faster than the cat), curving toward open water/space
+    var ct=state.alarm||{x:this.x,y:this.y};
+    var awx=this.x-ct.x, awy=this.y-ct.y, al=Math.hypot(awx,awy)||1;
+    var ccx=W*0.5, ccy=groundTop+(H-groundTop)*0.5, tcx=ccx-this.x, tcy=ccy-this.y, tl=Math.hypot(tcx,tcy)||1;
+    var bx=awx/al*0.72+tcx/tl*0.28, by=awy/al*0.72+tcy/tl*0.28;
+    tx=clamp(this.x+bx*150,16,W-16); ty=clamp(this.y+by*150,groundTop+16,H-16);
+    maxSpeed=RUN*1.02;
+  }
   else if(this.state==='huddle'){
     if(this.panicT>0){
-      // headless-chicken scatter: bolt in your own veering direction for a beat
+      // headless-chicken scatter: bolt in your own veering direction for a good while
       this.panicT-=dt; this.panicAng+=rand(-1,1)*dt*5;
-      tx=clamp(this.x+Math.cos(this.panicAng)*70,18,W-18); ty=clamp(this.y+Math.sin(this.panicAng)*70,groundTop+18,H-18);
-      maxSpeed=RUN*0.95;
+      tx=clamp(this.x+Math.cos(this.panicAng)*95,18,W-18); ty=clamp(this.y+Math.sin(this.panicAng)*95,groundTop+18,H-18);
+      maxSpeed=RUN*1.0;
     } else {
-      // calm again: gather back into a loose huddle
+      // calm again: hustle back together (briskly when scattered far, gently once close)
       var hub=state.huddle||{x:this.x,y:this.y}, sc=state.scare||0;
       var ha=this.huddleSlot*2.399963, hr=(15+(this.huddleSlot%3)*9)*(1+sc*1.0);
       tx=clamp(hub.x+Math.cos(ha)*hr,22,W-22); ty=clamp(hub.y+Math.sin(ha)*hr,groundTop+22,H-22);
-      maxSpeed=WALK*(1.4+sc*1.4);
+      var d2h=Math.hypot(tx-this.x,ty-this.y);
+      maxSpeed=clamp(d2h*1.6, WALK*1.3, RUN*0.85);
     }
   }
   else { tx=this.x; ty=this.y; maxSpeed=0; }
@@ -319,6 +329,10 @@ Duck.prototype.update=function(dt){
     this.pattering=false;
     this.wingFlap=Math.sin(this.stateT*22)*0.4; // a sleepy stretch of the wings
     this.hop+=(0-this.hop)*Math.min(1,dt*9);
+  } else if(this.state==='flee'){
+    this.pattering=false;
+    this.wingFlap=Math.sin(this.walkPhase*3+this.seed)*0.42; // flapping for dear life
+    this.hop=Math.abs(Math.sin(this.walkPhase*2.6))*2.0;
   } else if(this.state==='huddle'){
     this.pattering=false;
     var fl=Math.max(state.scare||0, this.panicT>0?0.95:0);
@@ -642,7 +656,7 @@ function assignFood(){
   for(i=0;i<pellets.length;i++) pellets[i].claims=0;
   for(var d=0;d<state.ducks.length;d++){
     dk=state.ducks[d];
-    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake'||dk.state==='huddle') continue;
+    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake'||dk.state==='huddle'||dk.state==='flee') continue;
     var best=null,bestScore=Infinity,bestDist=0;
     for(i=0;i<pellets.length;i++){
       var pe=pellets[i];
@@ -720,17 +734,19 @@ function manageSleep(){
 }
 
 // ---------- visitors (random cute guests) ----------
-function flockCentroid(){
-  var cx=0,cy=0,n=state.ducks.length||1;
-  for(var i=0;i<state.ducks.length;i++){ cx+=state.ducks[i].x; cy+=state.ducks[i].y; }
+function flockCentroid(){ // centre of the calm flock — ignores the one being chased
+  var cx=0,cy=0,n=0,i,d;
+  for(i=0;i<state.ducks.length;i++){ d=state.ducks[i]; if(d.state==='flee'||d===state.chased) continue; cx+=d.x; cy+=d.y; n++; }
+  if(n===0){ for(i=0;i<state.ducks.length;i++){ cx+=state.ducks[i].x; cy+=state.ducks[i].y; } n=state.ducks.length||1; }
   return {x:cx/n,y:cy/n};
 }
+function nearestDuck(x,y){ var best=null,bd=Infinity; for(var i=0;i<state.ducks.length;i++){ var d=state.ducks[i],dd=Math.hypot(d.x-x,d.y-y); if(dd<bd){ bd=dd; best=d; } } return best; }
 function landX(y,pad){ return shoreX(y)+(pad||16); } // keep land animals out of the water
-function spookFlock(cat){ // a pounce just landed: send every duck scarpering its own way
+function spookFlock(cat){ // a pounce just landed: send every duck scarpering in all directions
   state.scare=1;
   for(var i=0;i<state.ducks.length;i++){
     var d=state.ducks[i], away=Math.atan2(d.y-cat.y,d.x-cat.x);
-    d.panicAng=away+rand(-1.0,1.0); d.panicT=rand(0.7,1.4);
+    d.panicAng=away+rand(-1.7,1.7); d.panicT=rand(1.3,2.4); // wide, dramatic, all-directions
   }
 }
 
@@ -745,7 +761,7 @@ var VISITORS=[
 function summonVisitor(maker){
   if(state.visitor){
     if(state.visitor.spooks){ for(var i=0;i<state.ducks.length;i++) state.ducks[i].pickIdle(); }
-    state.alarm=null; state.huddle=null; state.scare=0;
+    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null;
   }
   state.visitor=maker();
   scheduleNextVisitor();
@@ -768,12 +784,13 @@ function manageVisitor(dt){
       state.huddle={ x:clamp(fc.x+dx/dd*push,28,W-28), y:clamp(fc.y+dy/dd*push,groundTop+28,H-28) };
       for(var i=0;i<state.ducks.length;i++){
         var dk=state.ducks[i];
-        if(dk.state!=='huddle'){ dk.state='huddle'; dk.huddleSlot=i; dk.targetPellet=null; }
+        if(dk===state.chased) continue; // the unlucky one is busy running for its life
+        if(dk.state!=='huddle'&&dk.state!=='flee'){ dk.state='huddle'; dk.huddleSlot=i; dk.targetPellet=null; }
       }
     }
     if(state.visitor.done){
       var wasSpook=state.visitor.spooks;
-      state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0;
+      state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null;
       if(wasSpook){ for(var j=0;j<state.ducks.length;j++) state.ducks[j].pickIdle(); state.lastFeed=state.time; rollSleepDelay(); }
       scheduleNextVisitor();
     }
@@ -817,22 +834,33 @@ Cat.prototype.update=function(dt){
     if(!this.pounced){ var fcp=flockCentroid(); if(Math.hypot(fcp.x-this.x,fcp.y-this.y)<58){ spookFlock(this); this.pounced=true; } } // they scatter as he commits to the pounce
     if(this.stateT>0.5){ this.state='recover'; this.stateT=0; }
   } else if(this.state==='recover'){ maxSpeed=0; crouchTarget=0.1; this.lunge=0;
-    if(this.stateT>rand(1.2,2.2)){
+    if(this.stateT>rand(0.5,0.9)){
+      if(this.lifeT>this.life){ this.state='leave'; this.stateT=0; this.tx=W+60; this.ty=clamp(this.y,groundTop+40,H-40); }
+      else { // single out the nearest (unlucky) duck and give chase
+        var prey=nearestDuck(this.x,this.y);
+        if(prey){ state.chased=prey; prey.state='flee'; prey.panicT=0; this.state='chase'; this.stateT=0; this.chaseDur=rand(3.5,6.5); }
+        else { this.state='stalk'; this.stateT=0; this.pounced=false; }
+      }
+    }
+  } else if(this.state==='chase'){ crouchTarget=0.1; maxSpeed=84; // determined, but a touch slower than a sprinting duck
+    var ch=state.chased;
+    if(ch){ this.tx=ch.x; this.ty=ch.y; }
+    if(!ch || this.stateT>this.chaseDur){
+      if(ch){ ch.state='huddle'; ch.panicT=0; } state.chased=null;
       if(this.lifeT>this.life){ this.state='leave'; this.stateT=0; this.tx=W+60; this.ty=clamp(this.y,groundTop+40,H-40); }
       else { this.state='stalk'; this.stateT=0; this.pounced=false; }
     }
   } else if(this.state==='leave'){ this.aim(false); maxSpeed=78;
     if(this.x>W+30) this.done=true;
   }
-  // Cats hate water: he'll wade after the ducks but at a crawl, so they can paddle clear.
+  // In water he's a bit slower than on land (85%) — but still quick; the ducks rely on out-running him.
   var inWater=isWater(this.x,this.y);
-  if(inWater) maxSpeed*=0.40;
+  if(inWater) maxSpeed*=0.85;
   // steering (same feel as the ducks)
   var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1;
   var desVx=0,desVy=0; if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
   var steer=Math.min(1,dt*(this.state==='pounce'?12:6));
   this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
-  if(inWater){ this.vx*=0.92; this.vy*=0.92; var sp=Math.hypot(this.vx,this.vy); if(sp>80){ this.vx=this.vx/sp*80; this.vy=this.vy/sp*80; } } // wades, but slower than on land
   this.x+=this.vx*dt; this.y+=this.vy*dt;
   this.y=clamp(this.y,groundTop+30,H-20);
   this.speed=Math.hypot(this.vx,this.vy);
@@ -850,44 +878,49 @@ function waterPoint(){ // a random spot comfortably inside the water
   for(var k=0;k<12;k++){ var y=rand(groundTop+24,H-24), edge=shoreX(y)-20; if(edge>30) return {x:rand(20,edge),y:y}; }
   return {x:30,y:groundTop+(H-groundTop)*0.5};
 }
-function Koi(){
-  this.kind='koi'; this.spooks=false; this.done=false;        // ducks pay it no mind
-  var p=waterPoint(); this.x=p.x; this.y=p.y;
-  this.heading=rand(0,6.283); this.vx=Math.cos(this.heading)*6; this.vy=Math.sin(this.heading)*6; this.speed=0;
-  this.tail=rand(0,6.283); this.surface=0; this.surfacing=false; this.surfT=0; this.surfDur=0;
-  this.nextSurf=rand(1.5,4.5); this.life=rand(20,34); this.lifeT=0;
-  this.pal = Math.random()<0.5 ? {base:'#f4f1ec',patch:'#e8702a',spot:'#cf5a1c'} : {base:'#f0a23a',patch:'#cf5a1c',spot:'#f7ede0'};
-  var t=waterPoint(); this.tx=t.x; this.ty=t.y;
+function makeKoiFish(){ // one fish in the school
+  var p=waterPoint(), t=waterPoint();
+  var f={ x:p.x, y:p.y, heading:rand(0,6.283), speed:0,
+    tail:rand(0,6.283), surface:0, surfacing:false, surfT:0, surfDur:0, nextSurf:rand(1.5,5.5),
+    tx:t.x, ty:t.y,
+    pal: Math.random()<0.5 ? {base:'#f4f1ec',patch:'#e8702a',spot:'#cf5a1c'} : {base:'#f0a23a',patch:'#cf5a1c',spot:'#f7ede0'} };
+  f.vx=Math.cos(f.heading)*6; f.vy=Math.sin(f.heading)*6;
+  return f;
+}
+function updateKoiFish(f,dt,canSurface){
+  f.tail+=dt*(5+f.speed*0.06);
+  var dx=f.tx-f.x, dy=f.ty-f.y, dd=Math.hypot(dx,dy)||1;
+  if(dd<14){ var t=waterPoint(); f.tx=t.x; f.ty=t.y; }
+  var maxSpeed=20+f.surface*8;
+  f.vx+=(dx/dd*maxSpeed-f.vx)*Math.min(1,dt*1.8); f.vy+=(dy/dd*maxSpeed-f.vy)*Math.min(1,dt*1.8);
+  f.x+=f.vx*dt; f.y+=f.vy*dt;
+  var edge=shoreX(f.y)-14;
+  if(f.x>edge){ f.x=edge; f.vx-=Math.abs(f.vx)*0.6+6; }
+  f.x=clamp(f.x,12,W); f.y=clamp(f.y,groundTop+18,H-14);
+  f.speed=Math.hypot(f.vx,f.vy);
+  if(f.speed>3) f.heading=Math.atan2(f.vy,f.vx);
+  if(f.surfacing){
+    f.surfT+=dt; f.surface=Math.sin(clamp(f.surfT/f.surfDur,0,1)*Math.PI);
+    if(f.surfT>=f.surfDur){ f.surfacing=false; f.surface=0; f.nextSurf=rand(4.5,10); }
+  } else {
+    f.surface+=(0-f.surface)*Math.min(1,dt*4);
+    f.nextSurf-=dt;
+    if(f.nextSurf<=0 && canSurface){ f.surfacing=true; f.surfT=0; f.surfDur=rand(1.3,2.4); spawnRipple(f.x,f.y,14); audio.bloop(); }
+  }
+  if(f.surfacing && f.surface>0.4 && Math.random()<dt*3) spawnRipple(f.x+rand(-4,4),f.y+rand(-3,3),9);
+}
+function Koi(){ // a small school of koi (ducks pay them no mind)
+  this.kind='koi'; this.spooks=false; this.done=false;
+  this.life=rand(24,38); this.lifeT=0;
+  this.fish=[]; for(var i=0;i<3;i++) this.fish.push(makeKoiFish());
+  this.y=this.fish[0].y;
 }
 Koi.prototype.update=function(dt){
-  this.lifeT+=dt; this.tail+=dt*(5+this.speed*0.06);
-  // glide toward the target, gently
-  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1;
-  if(dd<14){ var t=waterPoint(); this.tx=t.x; this.ty=t.y; }
-  var maxSpeed=20+this.surface*8;
-  var desVx=dx/dd*maxSpeed, desVy=dy/dd*maxSpeed;
-  var steer=Math.min(1,dt*1.8);
-  this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
-  this.x+=this.vx*dt; this.y+=this.vy*dt;
-  // stay under water: if nosing past the shore, ease back and turn away
-  var edge=shoreX(this.y)-14;
-  if(this.x>edge){ this.x=edge; this.vx-=Math.abs(this.vx)*0.6+6; }
-  this.x=clamp(this.x,12,W); this.y=clamp(this.y,groundTop+18,H-14);
-  this.speed=Math.hypot(this.vx,this.vy);
-  if(this.speed>3) this.heading=Math.atan2(this.vy,this.vx);
-  // surfacing cycle: rise, dwell, sink
-  if(this.surfacing){
-    this.surfT+=dt; var pr=clamp(this.surfT/this.surfDur,0,1);
-    this.surface=Math.sin(pr*Math.PI);
-    if(this.surfT>=this.surfDur){ this.surfacing=false; this.surface=0; this.nextSurf=rand(3.5,7.5); }
-  } else {
-    this.surface+=(0-this.surface)*Math.min(1,dt*4);
-    this.nextSurf-=dt;
-    if(this.nextSurf<=0 && this.lifeT<this.life){ this.surfacing=true; this.surfT=0; this.surfDur=rand(1.3,2.4); spawnRipple(this.x,this.y,14); audio.bloop(); }
-  }
-  if(this.surfacing && this.surface>0.4 && Math.random()<dt*3) spawnRipple(this.x+rand(-4,4),this.y+rand(-3,3),9);
-  // leave once its visit is up and it's back under
-  if(this.lifeT>this.life && this.surface<0.05) this.done=true;
+  this.lifeT+=dt;
+  var canSurface=this.lifeT<this.life, sy=0, allDown=true;
+  for(var i=0;i<this.fish.length;i++){ var f=this.fish[i]; updateKoiFish(f,dt,canSurface); sy+=f.y; if(f.surface>=0.05) allDown=false; }
+  this.y=sy/this.fish.length;             // average y for depth sorting
+  if(this.lifeT>this.life && allDown) this.done=true;
 };
 
 function update(dt){
@@ -1016,7 +1049,8 @@ function drawReed(g,rd){
   }
 }
 function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); }
-function drawKoi(g,k){
+function drawKoi(g,school){ for(var i=0;i<school.fish.length;i++) drawKoiFish(g,school.fish[i]); }
+function drawKoiFish(g,k){
   var ds=depthScale(k.y), s=ds*0.95, P=k.pal, sf=k.surface;
   g.save();
   g.translate(k.x,k.y); g.rotate(k.heading); g.scale(s,s);
