@@ -1038,14 +1038,14 @@ function manageVisitor(dt){
       for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic') state.ducks[mj].pickIdle();
       state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null;
       if(wasReact){ for(var j=0;j<state.ducks.length;j++){ state.ducks[j].pickIdle(); state.ducks[j].friendDecided=false; } state.lastFeed=state.time; rollSleepDelay(); }
-      scheduleNextVisitor();
+      if(state.time>=state.nextVisitor) scheduleNextVisitor();   // countdown already started at arrival; only re-roll if the visit outlasted it
     }
     return;
   }
   // Spawn timing: wait for the interval, and don't barge in during active feeding.
   if(state.time>=state.nextVisitor && state.pellets.length===0){
     var pool=unlockedVisitors();                       // only guests you've bought show up
-    if(pool.length) state.visitor=pool[randi(0,pool.length-1)].make();
+    if(pool.length){ state.visitor=pool[randi(0,pool.length-1)].make(); scheduleNextVisitor(); }  // start the next countdown from arrival
     else scheduleNextVisitor();                          // none unlocked yet — check again later
   }
 }
