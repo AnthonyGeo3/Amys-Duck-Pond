@@ -12,6 +12,8 @@ This document is a handover so the project can be continued in a fresh session (
 - Installable as a PWA on Android and iPhone, works offline.
 - Audio redesigned to a peaceful nature bed (breeze + birdsong) and tuned to taste.
 - Duck count currently 8.
+- **Live weather + day/night sync** for Wrexham, UK via the Open-Meteo API: real nighttime (deep-blue wash, twinkling stars, glowing moon, dimmed ducks) and rain effects (falling streaks + water-only splash ripples) that mirror the actual local conditions.
+- Tighter pellet swarming: up to 4 ducks can chase one pellet, and ducks now re-target every frame instead of locking on.
 
 ## Files (all live in the repo root, next to each other)
 
@@ -34,8 +36,10 @@ Everything is inside one IIFE in `index.html`. Rough map, top to bottom:
 - **`Duck` class** — position, velocity, and a little state machine: `wander → pause/peck → seek → eat → happy → …`. `update(dt)` does the steering/animation; `draw(g)` draws the duck procedurally with canvas paths.
 - **Scene building** — `renderStatic()` paints the sky, water, grass, shore, grass texture, flowers and pebbles **once** to an offscreen canvas (`bg`) for performance. Lilies, reeds, clouds are positioned in `initLilies/initReeds/initClouds`.
 - **Spawns** — `dropPellet`, `eatPellet`, and particle spawners (crumbs, hearts, tap rings, ripples).
-- **`assignFood()`** — each frame, assigns ducks to the best nearby pellet (with a sharing cap so they don't all dogpile).
-- **Per-frame draw** — `render()` blits the static `bg`, then draws animated layers (clouds, water shimmer, ripples, depth-sorted ducks/pellets/lilies/reeds, particles, vignette).
+- **`assignFood()`** — each frame, assigns ducks to the best nearby pellet. Targets are re-evaluated every frame (no lock-in), so a duck instantly switches to a closer pellet dropped near it. A small contention penalty plus a per-pellet cap stop more than 4 ducks dogpiling one pellet.
+- **Weather sync (`syncWeather()`)** — async `fetch` of the Open-Meteo current-conditions API for Wrexham (lat 53.0456, lon -2.9755), reading `is_day` and `weather_code`. WMO codes 51–67 and 80–82 are treated as rain/drizzle. Results land in the global `weather = {loaded, isDay, rain}`. Called **once at startup**; there's no polling, so state is fixed for the session until reload. Network failures are caught and the app keeps its defaults (day, no rain).
+- **Weather rendering** — `drawStarsAndMoon(g)` (twinkling stars from a once-generated `stars[]` map + a layered glowing moon) and `drawRain(g)` (falling streaks). `render()` applies a dark blue night wash behind the ducks and a lighter wash in front so ducks blend in and dim. Splash ripples are spawned in `update()` only over water (`isWater`) while it's raining.
+- **Per-frame draw** — `render()` blits the static `bg`, then draws animated layers (clouds, water shimmer, ripples, depth-sorted ducks/pellets/lilies/reeds, particles, weather washes/effects, vignette).
 - **`audio` module** — a self-contained IIFE using the Web Audio API. All sound is synthesised live (no audio files): a breeze bed, an airy shimmer, occasional birdsong, plus one-shot sounds (pellet plip, eat nom, happy chirp).
 - **Input / loop / resize** — pointer events for tap+drag feeding, the requestAnimationFrame loop, and canvas resize (re-runs scene build).
 - **Service worker registration** — a small script at the very bottom.
@@ -51,7 +55,10 @@ All in `index.html`.
 - **Number of ducks** — `var DUCK_COUNT = 8;` just above `initDucks()`. Change to any number; positions auto-scatter and colours cycle through `PALS`.
 - **Duck colours** — the `PALS` array. Add a 5th palette object to get a new colour into the rotation.
 - **Duck speeds** — `RUN` and `WALK` near the top.
-- **Food sharing** (how many ducks chase one pellet) — in `assignFood()`. Currently the score uses `pe.claims * (0.1 * minS)` and a pellet is "full" at `claims >= 4`. Lower the multiplier / raise the cap = more ducks per pellet; higher multiplier / lower cap = calmer, more spread out. (These were tuned up from the original 0.6 / 2 to suit 8 ducks.)
+- **Food sharing** (how many ducks chase one pellet) — in `assignFood()`. The score uses `pe.claims * (0.1 * minS)` and a pellet is "full" at `claims >= 4`. Lower the multiplier / raise the cap = more ducks per pellet (tighter swarming); higher multiplier / lower cap = calmer, more spread out. (Tuned up from the original `0.6` penalty / cap of `2` to encourage group swarming.) Note the target lock-in was removed, so ducks re-pick a pellet each frame — no extra knob needed.
+- **Weather location** — the lat/lon and API URL in `syncWeather()` (currently Wrexham, UK). Swap the coordinates to relocate the pond's weather. To make weather refresh during a session, wrap `syncWeather()` in a `setInterval` (it's a one-shot call today).
+- **Rain intensity** — splash spawn rate is the `Math.random() < dt * 15` test in `update()`; streak look is in `drawRain()`.
+- **Night look** — wash colours/opacity in `render()`'s night branches, plus the moon size/position and star count (`for(...i<80...)`) near the top.
 - **Audio bed** — in `startAmbient()`:
   - Breeze volume: `windGain.gain.value = 0.03`
   - Breeze tone: `wbp.frequency.value = 700` (lower = deeper/softer)
@@ -82,6 +89,8 @@ All in `index.html`.
 - **Caching**: see the update workflow above — one refresh after deploy; bump cache name to force-reset.
 - **Service worker scope**: `sw.js` must stay at the repo root (its scope is its own directory).
 - **Audio needs a user gesture**: the AudioContext is created/resumed on the first tap of the speaker button (browser requirement). Don't try to start sound on page load.
+- **Weather is fetched once, on load**: `syncWeather()` is only called at startup, so a session that spans dusk won't flip to night until reloaded. Open-Meteo is a free, key-less endpoint; if the request fails (offline, blocked, rate-limited) the app silently keeps daytime/no-rain defaults. The CSP / service-worker caching doesn't intercept the API call (it's cross-origin, network-only).
+- **Tap highlight**: `-webkit-tap-highlight-color: transparent;` in the global CSS removes the blue flash from rapid tapping on mobile — keep it if you touch the CSS reset.
 
 ---
 
@@ -90,7 +99,9 @@ All in `index.html`.
 - **iOS "Add to Home Screen" hint** — a small banner that appears only in iOS Safari when not yet installed, since iPhone users get no automatic install prompt.
 - **Scale duck size down as `DUCK_COUNT` rises**, so a big flock doesn't feel crowded.
 - **Remember the sound on/off preference** between visits with `localStorage` (works on the real GitHub Pages site).
-- **Day/night or seasonal themes** (e.g. a dusk palette with crickets).
+- **Periodic weather refresh** — wrap `syncWeather()` in a `setInterval` so a long-open session follows dusk/rain in real time.
+- **Night-time audio** — crickets/owl bed when `weather.isDay === 0`, to match the visual night mode.
+- **More weather states** — snow, fog, or wind-driven ripples driven off the same `weather_code`.
 - **A gentle running-water trickle** layer near the shore.
 - **Ducklings** following a parent, or more colour variety.
 
