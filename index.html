@@ -146,7 +146,7 @@ var ducksInit=false,running=true,last=0,hinted=false;
 
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
 var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null,
-  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90,chased:null};
+  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90,chased:null,friend:null};
 // Seconds of no feeding (and no pellets left) before the flock falls asleep — re-rolled in this range each feed.
 var SLEEP_MIN=60, SLEEP_MAX=120;
 function rollSleepDelay(){ state.sleepDelay=rand(SLEEP_MIN,SLEEP_MAX); }
@@ -210,7 +210,7 @@ function Duck(o){
   this.tx=this.x; this.ty=this.y; this.targetPellet=null;
   this.swimming=isWater(this.x,this.y); this.prevSwim=this.swimming; this.wakeT=0;
   this.drowsy=0; this.zzzT=rand(0.8,3.2);
-  this.panicT=0; this.panicAng=0;
+  this.panicT=0; this.panicAng=0; this.friendDecided=false;
   this.pickWander();
 }
 Duck.prototype.pickWander=function(){
@@ -256,6 +256,14 @@ Duck.prototype.update=function(dt){
     var bx=awx/al*0.72+tcx/tl*0.28, by=awy/al*0.72+tcy/tl*0.28;
     tx=clamp(this.x+bx*150,16,W-16); ty=clamp(this.y+by*150,groundTop+16,H-16);
     maxSpeed=RUN*1.02;
+  }
+  else if(this.state==='visit'){
+    // amble over to a friendly spot near the guest and mill about happily
+    var fr=state.friend||{x:this.x,y:this.y};
+    var va=this.huddleSlot*2.399963, vr=34+(this.huddleSlot%3)*11;
+    tx=clamp(fr.x+Math.cos(va)*vr,18,W-18); ty=clamp(fr.y+Math.sin(va)*vr,groundTop+18,H-18);
+    maxSpeed=WALK*1.25;
+    if(Math.hypot(fr.x-this.x,fr.y-this.y)<46 && Math.random()<dt*0.3) spawnHeart(this.x+rand(-4,4),this.y-30*depthScale(this.y));
   }
   else if(this.state==='huddle'){
     if(this.panicT>0){
@@ -656,7 +664,7 @@ function assignFood(){
   for(i=0;i<pellets.length;i++) pellets[i].claims=0;
   for(var d=0;d<state.ducks.length;d++){
     dk=state.ducks[d];
-    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake'||dk.state==='huddle'||dk.state==='flee') continue;
+    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake'||dk.state==='huddle'||dk.state==='flee'||dk.state==='visit') continue;
     var best=null,bestScore=Infinity,bestDist=0;
     for(i=0;i<pellets.length;i++){
       var pe=pellets[i];
@@ -706,7 +714,7 @@ function updateClouds(dt){
 
 function manageSleep(){
   var ducks=state.ducks, i, d;
-  if(state.alarm) return; // a visitor has the flock's attention; no napping
+  if(state.alarm||state.friend) return; // a visitor has the flock's attention; no napping
   if(state.sleeping){
     // Any fresh food wakes the whole flock.
     if(state.pellets.length>0){
@@ -755,13 +763,14 @@ function spookFlock(cat){ // a pounce just landed: send every duck scarpering in
 // auto-appear both in the random rotation and in the "call a visitor" shop.
 var VISITORS=[
   { name:'Ginger cat', make:function(){ return new Cat(); } },
-  { name:'Koi fish',   make:function(){ return new Koi(); } }
+  { name:'Koi fish',   make:function(){ return new Koi(); } },
+  { name:'Red panda',  make:function(){ return new RedPanda(); } }
 ];
 // Summon a specific guest right now (used by the shop), clearing any current one first.
 function summonVisitor(maker){
   if(state.visitor){
-    if(state.visitor.spooks){ for(var i=0;i<state.ducks.length;i++) state.ducks[i].pickIdle(); }
-    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null;
+    if(state.visitor.spooks||state.visitor.befriends){ for(var i=0;i<state.ducks.length;i++){ state.ducks[i].pickIdle(); state.ducks[i].friendDecided=false; } }
+    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null;
   }
   state.visitor=maker();
   scheduleNextVisitor();
@@ -787,11 +796,19 @@ function manageVisitor(dt){
         if(dk===state.chased) continue; // the unlucky one is busy running for its life
         if(dk.state!=='huddle'&&dk.state!=='flee'){ dk.state='huddle'; dk.huddleSlot=i; dk.targetPellet=null; }
       }
+    } else if(state.visitor.befriends){
+      // Friendly guest: nearby ducks wander over to say hello (not all of them, and only as it gets close).
+      state.sleeping=false; state.friend=state.visitor; var vf=state.visitor;
+      for(var i=0;i<state.ducks.length;i++){
+        var dk=state.ducks[i];
+        if(dk.state==='visit'||dk.friendDecided) continue;
+        if(Math.hypot(dk.x-vf.x,dk.y-vf.y)<130){ dk.friendDecided=true; if(Math.random()<0.72){ dk.state='visit'; dk.huddleSlot=i; dk.targetPellet=null; } }
+      }
     }
     if(state.visitor.done){
-      var wasSpook=state.visitor.spooks;
-      state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null;
-      if(wasSpook){ for(var j=0;j<state.ducks.length;j++) state.ducks[j].pickIdle(); state.lastFeed=state.time; rollSleepDelay(); }
+      var wasReact=state.visitor.spooks||state.visitor.befriends;
+      state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null;
+      if(wasReact){ for(var j=0;j<state.ducks.length;j++){ state.ducks[j].pickIdle(); state.ducks[j].friendDecided=false; } state.lastFeed=state.time; rollSleepDelay(); }
       scheduleNextVisitor();
     }
     return;
@@ -927,6 +944,49 @@ Koi.prototype.update=function(dt){
   if(this.lifeT>this.life && allDown) this.done=true;
 };
 
+// ----- Red panda: ambles around the grass; nearby ducks toddle over to be near their friend -----
+function RedPanda(){
+  this.kind='panda'; this.spooks=false; this.befriends=true; this.done=false;
+  this.y=clamp(groundTop+(H-groundTop)*rand(0.35,0.80),groundTop+50,H-50);
+  this.x=W+34; this.facing=-1; this.vx=0; this.vy=0; this.speed=0; this.walkPhase=0;
+  this.state='enter'; this.stateT=0; this.lifeT=0; this.life=rand(28,44);
+  this.tail=rand(0,6.283); this.blink=0; this.blinkT=rand(1.5,4); this.bob=0;
+  this.tx=clamp(W*rand(0.55,0.80),60,W-30); this.ty=this.y; this.pauseDur=0;
+}
+RedPanda.prototype.pickAmble=function(){
+  var y=clamp(this.y+rand(-130,130),groundTop+44,H-44);
+  var lo=landX(y,30);
+  this.tx=clamp(rand(lo,W-30),lo,W-30); this.ty=y;
+};
+RedPanda.prototype.update=function(dt){
+  this.stateT+=dt; this.lifeT+=dt; this.tail+=dt*2.4;
+  var maxSpeed=0;
+  if(this.state==='enter'){ maxSpeed=52;
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<10){ this.state='amble'; this.stateT=0; this.pickAmble(); }
+  } else if(this.state==='amble'){ maxSpeed=34;
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<10){
+      if(this.lifeT>this.life){ this.state='leave'; this.tx=W+60; this.ty=clamp(this.y,groundTop+40,H-40); }
+      else if(Math.random()<0.4){ this.state='pause'; this.stateT=0; this.pauseDur=rand(1.2,3.0); }
+      else this.pickAmble();
+    }
+  } else if(this.state==='pause'){ maxSpeed=0;
+    if(this.stateT>this.pauseDur){ if(this.lifeT>this.life){ this.state='leave'; this.tx=W+60; this.ty=clamp(this.y,groundTop+40,H-40); } else { this.state='amble'; this.pickAmble(); } }
+  } else if(this.state==='leave'){ maxSpeed=56; if(this.x>W+30) this.done=true; }
+  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1;
+  var desVx=0,desVy=0; if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
+  var steer=Math.min(1,dt*5);
+  this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  this.x+=this.vx*dt; this.y+=this.vy*dt;
+  // keep him on the grass (out of the pond), except while strolling off-screen
+  if(this.state!=='leave'){ var edge=landX(this.y,12); if(this.x<edge){ this.x=edge; this.vx+=8; } }
+  this.y=clamp(this.y,groundTop+24,H-18);
+  this.speed=Math.hypot(this.vx,this.vy);
+  if(Math.abs(this.vx)>5) this.facing=this.vx>0?1:-1;
+  this.walkPhase+=dt*(2.5+this.speed*0.07);
+  this.bob=Math.sin(this.walkPhase)*Math.min(1,this.speed/40);
+  this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(1.8,4.5); }
+};
+
 function update(dt){
   manageVisitor(dt);
   manageSleep();
@@ -1052,7 +1112,67 @@ function drawReed(g,rd){
     g.strokeStyle='#5f923c'; g.lineWidth=1; g.beginPath(); g.moveTo(tx,ty); g.lineTo(tx+sway*0.08,ty-rd.h*0.14); g.stroke();
   }
 }
-function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); }
+function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); }
+function pandaLeg(g,hipX,hipY,phase,amt,color,w){
+  var footX=hipX+Math.sin(phase)*4*amt, footY=-Math.max(0,Math.sin(phase+Math.PI/2))*3*amt;
+  g.strokeStyle=color; g.lineWidth=w; g.lineCap='round';
+  g.beginPath(); g.moveTo(hipX,hipY); g.lineTo(footX,footY); g.stroke();
+  g.fillStyle=color; g.beginPath(); g.ellipse(footX,footY-0.3,2.6,1.6,0,0,Math.PI*2); g.fill();
+}
+function drawPanda(g,p){
+  var ds=depthScale(p.y), s=ds*1.06;
+  var P={fur:'#bf5a2c',furDark:'#a4471f',belly:'#3a261a',leg:'#2e1d13',face:'#f4ecdd',ear:'#b9542a',earIn:'#f6efe2',nose:'#241712',eye:'#241712',stripe:'#8a4a2c',tailA:'#c2602f',tailB:'#3a261a'};
+  g.save();
+  g.translate(p.x,p.y);
+  g.fillStyle='rgba(45,55,45,0.16)'; g.beginPath(); g.ellipse(0,0,21*s,5*s,0,0,Math.PI*2); g.fill();
+  g.scale(p.facing,1);
+  g.translate(0,-(p.bob||0)*s*0.4);
+  g.scale(s,s);
+  var bodyY=-14, rearX=-14, shoulderX=12, ph=p.walkPhase, amt=clamp(p.speed/40,0.12,1), headX=21, headY=-23;
+  // tail (behind, bushy + ringed)
+  var sw=Math.sin(p.tail)*4;
+  var t0x=rearX-2,t0y=bodyY+1, t1x=rearX-15,t1y=bodyY-6+sw*0.4, t2x=rearX-22,t2y=bodyY-20+sw;
+  g.lineCap='round'; g.lineJoin='round';
+  g.strokeStyle=P.tailA; g.lineWidth=10; g.beginPath(); g.moveTo(t0x,t0y); g.quadraticCurveTo(t1x,t1y,t2x,t2y); g.stroke();
+  function qpt(t){ var mt=1-t; return [mt*mt*t0x+2*mt*t*t1x+t*t*t2x, mt*mt*t0y+2*mt*t*t1y+t*t*t2y]; }
+  g.strokeStyle=P.tailB; g.lineWidth=10;
+  [0.32,0.62,0.9].forEach(function(tt){ var a=qpt(tt-0.06), b=qpt(tt+0.06); g.beginPath(); g.moveTo(a[0],a[1]); g.lineTo(b[0],b[1]); g.stroke(); });
+  var tip=qpt(1); g.fillStyle=P.tailB; g.beginPath(); g.ellipse(tip[0],tip[1],5,5,0,0,Math.PI*2); g.fill();
+  // far legs
+  pandaLeg(g,rearX+2,bodyY+8,ph+Math.PI*0.5,amt,P.belly,4.6);
+  pandaLeg(g,shoulderX-1,bodyY+8,ph+Math.PI*1.5,amt,P.belly,4.6);
+  // body
+  g.fillStyle=P.fur;
+  g.beginPath(); g.ellipse(rearX,bodyY-1,12,11,0.05,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(-1,bodyY,18,10.5,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(shoulderX,bodyY-1,10,9.5,0,0,Math.PI*2); g.fill();
+  g.fillStyle=P.belly; g.beginPath(); g.ellipse(0,bodyY+6,15,5.5,0,0,Math.PI*2); g.fill();
+  // near legs
+  pandaLeg(g,rearX+3,bodyY+8,ph+Math.PI,amt,P.leg,5.0);
+  pandaLeg(g,shoulderX,bodyY+8,ph,amt,P.leg,5.2);
+  // ears
+  function ear(sign){ g.save(); g.translate(headX+sign*3.5,headY-6.5);
+    g.fillStyle=P.ear; g.beginPath(); g.ellipse(0,0,4.4,4.0,0,0,Math.PI*2); g.fill();
+    g.fillStyle=P.earIn; g.beginPath(); g.ellipse(0,0.6,2.4,2.2,0,0,Math.PI*2); g.fill(); g.restore(); }
+  ear(-1); ear(1);
+  // head + white face mask
+  g.fillStyle=P.fur; g.beginPath(); g.ellipse(headX,headY,9,8.4,0,0,Math.PI*2); g.fill();
+  g.fillStyle=P.face;
+  g.beginPath(); g.ellipse(headX+3,headY+2.5,6.5,5.6,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(headX-3.5,headY-0.5,3.2,3.6,0,0,Math.PI*2); g.fill();
+  // tear stripe
+  var ex=headX+1.5, ey=headY-1.6;
+  g.strokeStyle=P.stripe; g.lineWidth=2.0; g.lineCap='round';
+  g.beginPath(); g.moveTo(ex,ey+1); g.quadraticCurveTo(headX+5,headY+3,headX+6.5,headY+6); g.stroke();
+  // nose
+  g.fillStyle=P.nose; g.beginPath(); g.ellipse(headX+8.4,headY+1.6,1.7,1.4,0,0,Math.PI*2); g.fill();
+  g.strokeStyle=P.stripe; g.lineWidth=0.8; g.beginPath(); g.moveTo(headX+8.4,headY+3); g.lineTo(headX+8.4,headY+4.2); g.stroke();
+  // eye
+  if(p.blink>0){ g.strokeStyle=P.eye; g.lineWidth=1; g.beginPath(); g.moveTo(ex-2,ey); g.quadraticCurveTo(ex,ey+1.2,ex+2,ey); g.stroke(); }
+  else { g.fillStyle=P.eye; g.beginPath(); g.ellipse(ex,ey,2.1,2.3,0,0,Math.PI*2); g.fill();
+    g.fillStyle='rgba(255,255,255,0.85)'; g.beginPath(); g.ellipse(ex-0.6,ey-0.8,0.7,0.8,0,0,Math.PI*2); g.fill(); }
+  g.restore();
+}
 function drawKoi(g,school){ for(var i=0;i<school.fish.length;i++) drawKoiFish(g,school.fish[i]); }
 function drawKoiFish(g,k){
   var ds=depthScale(k.y), s=ds*0.95, P=k.pal, sf=k.surface;
