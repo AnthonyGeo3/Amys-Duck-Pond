@@ -93,11 +93,12 @@ var ducksInit=false,running=true,last=0,hinted=false;
 
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
 var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null,
-  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0};
-// Seconds of no feeding (and no pellets left) before the flock groups up and falls asleep.
-var SLEEP_DELAY=120;
+  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90};
+// Seconds of no feeding (and no pellets left) before the flock falls asleep — re-rolled in this range each feed.
+var SLEEP_MIN=60, SLEEP_MAX=120;
+function rollSleepDelay(){ state.sleepDelay=rand(SLEEP_MIN,SLEEP_MAX); }
 // A random cute animal wanders in once every VISITOR_MIN..VISITOR_MAX seconds, one at a time.
-var VISITOR_MIN=300, VISITOR_MAX=600;
+var VISITOR_MIN=180, VISITOR_MAX=300;
 
 // Static star map generated once
 var stars=[]; 
@@ -556,7 +557,7 @@ function dropPellet(x,y){
   if(state.pellets.length>=60) state.pellets.shift();
   var inWater=isWater(x,y);
   state.pellets.push({x:x,y:y,z:24*depthScale(y),vz:0,inWater:inWater,claims:0,settled:false,bob:Math.random()*6.283});
-  state.lastFeed=state.time;
+  state.lastFeed=state.time; rollSleepDelay();
   spawnTap(x,y); hideHint(); audio.plip(inWater);
 }
 function eatPellet(pe,duck){
@@ -640,7 +641,7 @@ function manageSleep(){
   }
   // Don't drift off mid-meal or mid-celebration.
   if(state.pellets.length>0) return;
-  if(state.time-state.lastFeed<SLEEP_DELAY) return;
+  if(state.time-state.lastFeed<state.sleepDelay) return;
   for(i=0;i<ducks.length;i++){ var s=ducks[i].state; if(s==='seek'||s==='eat'||s==='happy'||s==='wake') return; }
   // Time to roost: gather around the flock's centre and settle down.
   var cx=0,cy=0,n=ducks.length||1;
@@ -678,7 +679,10 @@ function manageVisitor(dt){
       state.sleeping=false; state.alarm=state.visitor;
       var fc=flockCentroid(), v=state.visitor;
       var dx=fc.x-v.x, dy=fc.y-v.y, dd=Math.hypot(dx,dy)||1;
-      state.huddle={ x:clamp(fc.x+dx/dd*42,40,W-40), y:clamp(fc.y+dy/dd*42,groundTop+40,H-40) };
+      // Hold a loose huddle in place while he creeps up (push 0 = gather, don't flee);
+      // only bolt away when he actually pounces (scare spikes). The per-duck slot radius keeps them spread, not stacked.
+      var push=(state.scare||0)*78;
+      state.huddle={ x:clamp(fc.x+dx/dd*push,28,W-28), y:clamp(fc.y+dy/dd*push,groundTop+28,H-28) };
       for(var i=0;i<state.ducks.length;i++){
         var dk=state.ducks[i];
         if(dk.state!=='huddle'){ dk.state='huddle'; dk.huddleSlot=i; dk.targetPellet=null; }
@@ -687,7 +691,7 @@ function manageVisitor(dt){
     if(state.visitor.done){
       var wasSpook=state.visitor.spooks;
       state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0;
-      if(wasSpook){ for(var j=0;j<state.ducks.length;j++) state.ducks[j].pickIdle(); state.lastFeed=state.time; }
+      if(wasSpook){ for(var j=0;j<state.ducks.length;j++) state.ducks[j].pickIdle(); state.lastFeed=state.time; rollSleepDelay(); }
       scheduleNextVisitor();
     }
     return;
@@ -706,13 +710,16 @@ function Cat(){
   this.vx=0; this.vy=0; this.speed=0; this.walkPhase=0;
   this.state='enter'; this.stateT=0; this.lifeT=0; this.life=rand(20,30);
   this.crouch=0; this.hop=0; this.lunge=0; this.tail=Math.random()*6.283; this.blink=0; this.blinkT=rand(1.5,4);
+  this.meowT=rand(1.5,4); this.wakeT=0;
   this.tx=clamp(W*rand(0.6,0.85),60,W-30); this.ty=this.y;
 }
-Cat.prototype.aim=function(toFlock,pad,stopAt){
+Cat.prototype.aim=function(toFlock,opts){
+  opts=opts||{};
   var t = toFlock? flockCentroid() : {x:this.tx,y:this.ty};
   var ty=clamp(t.y,groundTop+40,H-40);
-  var tx=Math.max(t.x, landX(ty,pad||18)); // never wade into the pond
-  if(stopAt){ var dx=tx-this.x, dy=ty-this.y, dd=Math.hypot(dx,dy)||1; tx=this.x+dx/dd*Math.max(0,dd-stopAt); ty=this.y+dy/dd*Math.max(0,dd-stopAt); }
+  var tx=t.x;
+  if(!opts.water) tx=Math.max(tx, landX(ty,opts.pad||18)); // entering/leaving: stay on grass
+  if(opts.stopAt){ var dx=tx-this.x, dy=ty-this.y, dd=Math.hypot(dx,dy)||1; tx=this.x+dx/dd*Math.max(0,dd-opts.stopAt); ty=this.y+dy/dd*Math.max(0,dd-opts.stopAt); }
   this.tx=clamp(tx,30,W+40); this.ty=ty;
 };
 Cat.prototype.update=function(dt){
@@ -720,10 +727,11 @@ Cat.prototype.update=function(dt){
   var maxSpeed=0, crouchTarget=0;
   if(this.state==='enter'){ this.aim(false); maxSpeed=64;
     if(Math.hypot(this.tx-this.x,this.ty-this.y)<8){ this.state='stalk'; this.stateT=0; }
-  } else if(this.state==='stalk'){ this.aim(true,40,46); maxSpeed=24; crouchTarget=0.85;
-    if(this.stateT>rand(1.4,2.6)+0.0){ this.state='pounce'; this.stateT=0; this.lunge=0; state.scare=1; this.hop=0; }
-  } else if(this.state==='pounce'){ this.aim(true,24,10); maxSpeed=190; crouchTarget=0.15;
+  } else if(this.state==='stalk'){ this.aim(true,{water:true,stopAt:34}); maxSpeed=24; crouchTarget=0.85;
+    if(this.stateT>rand(1.4,2.6)+0.0){ this.state='pounce'; this.stateT=0; this.lunge=0; this.hop=0; }
+  } else if(this.state==='pounce'){ this.aim(true,{water:true,stopAt:8}); maxSpeed=170; crouchTarget=0.15;
     this.lunge=Math.min(1,this.stateT*6); this.hop=Math.sin(clamp(this.stateT/0.5,0,1)*Math.PI)*6;
+    var fcp=flockCentroid(); if(Math.hypot(fcp.x-this.x,fcp.y-this.y)<42) state.scare=1; // they only bolt once he's right on them
     if(this.stateT>0.5){ this.state='recover'; this.stateT=0; }
   } else if(this.state==='recover'){ maxSpeed=0; crouchTarget=0.1; this.lunge=0;
     if(this.stateT>rand(1.2,2.2)){
@@ -733,18 +741,25 @@ Cat.prototype.update=function(dt){
   } else if(this.state==='leave'){ this.aim(false); maxSpeed=78;
     if(this.x>W+30) this.done=true;
   }
+  // Cats hate water: he'll wade after the ducks but at a crawl, so they can paddle clear.
+  var inWater=isWater(this.x,this.y);
+  if(inWater) maxSpeed*=0.32;
   // steering (same feel as the ducks)
-  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1, des=0;
+  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1;
   var desVx=0,desVy=0; if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
   var steer=Math.min(1,dt*(this.state==='pounce'?12:6));
   this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  if(inWater){ this.vx*=0.9; this.vy*=0.9; var sp=Math.hypot(this.vx,this.vy); if(sp>72){ this.vx=this.vx/sp*72; this.vy=this.vy/sp*72; } } // bogs down in the pond
   this.x+=this.vx*dt; this.y+=this.vy*dt;
   this.y=clamp(this.y,groundTop+30,H-20);
   this.speed=Math.hypot(this.vx,this.vy);
   if(Math.abs(this.vx)>5) this.facing=this.vx>0?1:-1;
   this.walkPhase+=dt*(2.5+this.speed*0.06);
   this.crouch+=(crouchTarget-this.crouch)*Math.min(1,dt*5);
+  this.inWater=inWater;
+  if(inWater&&this.speed>6){ this.wakeT-=dt; if(this.wakeT<=0){ spawnRipple(this.x-this.facing*6*depthScale(this.y),this.y+6,12); this.wakeT=0.3; } }
   this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(1.8,4.5); }
+  this.meowT-=dt; if(this.meowT<=0 && this.state!=='leave'){ audio.meow(); this.meowT=rand(4.5,9.5); }
 };
 
 function update(dt){
@@ -882,11 +897,11 @@ function catLeg(g,hipX,hipY,phase,amt,color,w){
   g.fillStyle=color; g.beginPath(); g.ellipse(footX,footY-0.4,2.5,1.5,0,0,Math.PI*2); g.fill();
 }
 function drawCat(g,cat){
-  var ds=depthScale(cat.y), s=ds*1.04;
+  var ds=depthScale(cat.y), s=ds*1.04, wet=!!cat.inWater;
   var P={fur:'#e8913f',dark:'#c9762a',cream:'#f7e6cf',stripe:'#b9661c',ear:'#eda07f',earIn:'#e89f83',nose:'#d56a72',eye:'#4a8a3c'};
   g.save();
   g.translate(cat.x,cat.y);
-  g.fillStyle='rgba(45,55,45,0.16)';
+  g.fillStyle='rgba(45,55,45,'+(wet?0.06:0.16)+')';
   g.beginPath(); g.ellipse(0,0,23*s,5*s,0,0,Math.PI*2); g.fill();
   g.scale(cat.facing,1);
   g.translate(0,-(cat.hop||0)*s);
@@ -966,6 +981,10 @@ function drawCat(g,cat){
   g.moveTo(headX+5.5,headY+3); g.lineTo(headX+13,headY+3.4);
   g.moveTo(headX+5.5,headY+3.6); g.lineTo(headX+12.5,headY+6); g.stroke();
 
+  if(wet){ // waterline across the lower body while he wades
+    g.fillStyle='rgba(95,162,168,0.55)'; g.beginPath(); g.ellipse(-1,bodyY+9,21,5.2,0,0,Math.PI*2); g.fill();
+    g.fillStyle='rgba(255,255,255,0.20)'; g.beginPath(); g.ellipse(-1,bodyY+7.6,20,1.9,0,0,Math.PI*2); g.fill();
+  }
   g.restore();
 }
 function drawHeart(g,x,y,s,a){
@@ -1184,6 +1203,31 @@ var audio=(function(){
       }
     }catch(e){}
   }
+  function meow(){
+    if(!actx||!enabled) return;
+    try{
+      var t=actx.currentTime;
+      var o=actx.createOscillator(), bp=actx.createBiquadFilter(), g=actx.createGain();
+      o.type='sawtooth';
+      // pitch contour: a little rise then a fall — "me-ow"
+      o.frequency.setValueAtTime(560,t);
+      o.frequency.linearRampToValueAtTime(770,t+0.16);
+      o.frequency.linearRampToValueAtTime(470,t+0.5);
+      // vibrato for a plaintive wobble
+      var vib=actx.createOscillator(), vibG=actx.createGain();
+      vib.frequency.value=13; vibG.gain.value=16;
+      vib.connect(vibG); vibG.connect(o.frequency); vib.start(t); vib.stop(t+0.62);
+      // vowel formant sweep (ee -> ow)
+      bp.type='bandpass'; bp.Q.value=4.5;
+      bp.frequency.setValueAtTime(1500,t); bp.frequency.linearRampToValueAtTime(850,t+0.5);
+      o.connect(bp); bp.connect(g); g.connect(master);
+      g.gain.setValueAtTime(0.0001,t);
+      g.gain.linearRampToValueAtTime(0.085,t+0.07);
+      g.gain.setValueAtTime(0.08,t+0.24);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+0.6);
+      o.start(t); o.stop(t+0.62);
+    }catch(e){}
+  }
   function setEnabled(on){
     ensure(); if(!actx) return false;
     enabled=on;
@@ -1204,7 +1248,7 @@ var audio=(function(){
     }catch(e){}
     return true;
   }
-  return { toggle:function(){ return setEnabled(!enabled); }, isOn:function(){ return enabled; }, plip:plip, nom:nom, happy:happy };
+  return { toggle:function(){ return setEnabled(!enabled); }, isOn:function(){ return enabled; }, plip:plip, nom:nom, happy:happy, meow:meow };
 })();
 
 // ---------- ui ----------
@@ -1266,6 +1310,7 @@ document.addEventListener('visibilitychange',function(){
 resize();
 updateSndIcon();
 syncWeather();
+rollSleepDelay();
 scheduleNextVisitor();
 last=performance.now();
 requestAnimationFrame(frame);
