@@ -956,7 +956,8 @@ var VISITORS=[
   { id:'stork', name:'Stork',      make:function(){ return new Stork(); } },
   { id:'dragonfly', name:'Dragonflies', make:function(){ return new Dragonfly(); } },
   { id:'frog',  name:'Frogs',      make:function(){ return new FrogFamily(); } },
-  { id:'giraffe', name:'Giraffe',  make:function(){ return new Giraffe(); } }
+  { id:'giraffe', name:'Giraffe',  make:function(){ return new Giraffe(); } },
+  { id:'otters', name:'Otters',    make:function(){ return new Otters(); } }
 ];
 function visitorById(id){ for(var i=0;i<VISITORS.length;i++) if(VISITORS[i].id===id) return VISITORS[i]; return null; }
 function unlockedVisitors(){ var r=[]; for(var i=0;i<VISITORS.length;i++) if(state.unlocked&&state.unlocked[VISITORS[i].id]) r.push(VISITORS[i]); return r; }
@@ -1217,6 +1218,30 @@ Koi.prototype.update=function(dt){
   for(var i=0;i<this.fish.length;i++){ var f=this.fish[i]; updateKoiFish(f,dt,canSurface); sy+=f.y; if(f.surface>=0.05) allDown=false; }
   this.y=sy/this.fish.length;             // average y for depth sorting
   if(this.lifeT>this.life && allDown) this.done=true;
+};
+
+// ----- Otters: a pair float on their backs holding paws, drifting gently around the pond -----
+function Otters(){
+  this.kind='otters'; this.spooks=false; this.done=false;
+  this.life=rand(30,46); this.lifeT=0; this.sink=0;
+  var p=waterPoint(); this.cx=p.x; this.cy=clamp(p.y,groundTop+60,H-60);
+  var t=waterPoint(); this.tx=t.x; this.ty=clamp(t.y,groundTop+60,H-60);
+  this.facing=this.tx<this.cx?-1:1; this.bob=rand(0,6.283); this.gap=34; this.rippleT=rand(0.4,1.2);
+  this.y=this.cy;
+}
+Otters.prototype.update=function(dt){
+  this.lifeT+=dt; this.bob+=dt*1.5;
+  var dx=this.tx-this.cx, dy=this.ty-this.cy, dd=Math.hypot(dx,dy)||1;
+  if(dd<22){ var t=waterPoint(); this.tx=t.x; this.ty=clamp(t.y,groundTop+60,H-60); }
+  var sp=11;                                  // a slow, lazy drift
+  this.cx+=dx/dd*sp*dt; this.cy+=dy/dd*sp*dt;
+  var halfg=this.gap*0.5*depthScale(this.cy)+18;     // keep BOTH otters comfortably inside the water
+  this.cy=clamp(this.cy,groundTop+halfg,H-halfg);
+  var edge=shoreX(this.cy)-32; if(this.cx>edge) this.cx=edge; this.cx=clamp(this.cx,26,W);
+  if(Math.abs(dx)>2) this.facing=dx<0?-1:1;          // heads lead the drift
+  this.rippleT-=dt; if(this.rippleT<=0){ spawnRipple(this.cx,this.cy+7,17); this.rippleT=rand(0.9,1.7); }
+  if(this.lifeT>this.life){ this.sink+=dt*0.5; if(this.sink>=1) this.done=true; }   // quietly dive away at the end
+  this.y=this.cy;
 };
 
 // ----- Red panda: ambles around the grass; nearby ducks toddle over to be near their friend -----
@@ -1599,7 +1624,7 @@ function drawReed(g,rd){
     g.strokeStyle='#5f923c'; g.lineWidth=1; g.beginPath(); g.moveTo(tx,ty); g.lineTo(tx+sway*0.08,ty-rd.h*0.14); g.stroke();
   }
 }
-function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); else if(v.kind==='giraffe') drawGiraffe(g,v); }
+function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); else if(v.kind==='giraffe') drawGiraffe(g,v); else if(v.kind==='otters') drawOtters(g,v); }
 function drawFrogFamily(g,fam){
   var all=fam.babies.concat([fam.parent]); all.sort(function(a,b){return a.y-b.y;});
   for(var i=0;i<all.length;i++) drawFrog(g,all[i]);
@@ -1901,6 +1926,50 @@ function drawKoiFish(g,k){
   // a soft submerged tint when deep
   if(sf<0.6){ g.globalAlpha=(0.6-sf)*0.5; g.fillStyle='rgba(70,140,150,1)';
     g.beginPath(); g.ellipse(0,0,13,6,0,0,Math.PI*2); g.fill(); }
+  g.restore();
+}
+function drawOneOtter(g,x,y,s,facing,bob){
+  var C={fur:'#7c5a3e',furD:'#5f442d',belly:'#c9a87f',face:'#8a6646',nose:'#241712',eye:'#241712',paw:'#52371f'};
+  g.save(); g.translate(x,y+bob); g.scale(facing,1); g.scale(s,s);
+  // tail trailing off the back end (-x)
+  g.fillStyle=C.furD; g.beginPath(); g.moveTo(-19,1); g.quadraticCurveTo(-33,-2,-40,3); g.quadraticCurveTo(-32,7,-19,5); g.closePath(); g.fill();
+  // back/sides showing around the belly
+  g.fillStyle=C.fur; g.beginPath(); g.ellipse(0,0,22,11.5,0,0,Math.PI*2); g.fill();
+  // pale belly facing up
+  g.fillStyle=C.belly; g.beginPath(); g.ellipse(1,1,18,8,0,0,Math.PI*2); g.fill();
+  // back feet poking up out of the water near the middle
+  g.fillStyle=C.paw; g.beginPath(); g.ellipse(-9,-9.5,3.1,3.8,0.2,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(-2,-10,3.1,3.8,-0.1,0,Math.PI*2); g.fill();
+  // head raised at the front (+x)
+  g.fillStyle=C.fur; g.beginPath(); g.ellipse(22,-3.5,8.2,7.6,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(18.5,-10,2.5,2.3,0,0,Math.PI*2); g.fill();   // ears
+  g.beginPath(); g.ellipse(25.5,-10,2.5,2.3,0,0,Math.PI*2); g.fill();
+  g.fillStyle=C.face; g.beginPath(); g.ellipse(26,-1.5,4.8,4.2,0,0,Math.PI*2); g.fill();   // muzzle
+  g.fillStyle=C.nose; g.beginPath(); g.ellipse(29.5,-2.4,1.7,1.4,0,0,Math.PI*2); g.fill();  // nose
+  g.fillStyle=C.eye; g.beginPath(); g.ellipse(20,-5.4,1.4,1.6,0,0,Math.PI*2); g.fill();      // eyes
+  g.beginPath(); g.ellipse(25,-5.4,1.4,1.6,0,0,Math.PI*2); g.fill();
+  g.fillStyle='rgba(255,255,255,0.85)'; g.beginPath(); g.ellipse(19.5,-6,0.5,0.6,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(24.5,-6,0.5,0.6,0,0,Math.PI*2); g.fill();
+  g.restore();
+}
+function drawOtters(g,o){
+  var ds=depthScale(o.cy), s=ds*1.0;
+  var g2=o.gap*0.5*ds, dyk=o.sink*9;
+  var b1=Math.sin(o.bob)*1.6, b2=Math.sin(o.bob+1.5)*1.6;
+  g.save(); g.globalAlpha*=(1-o.sink*0.85);
+  // soft floating shadows on the water
+  g.fillStyle='rgba(40,80,90,0.13)';
+  g.beginPath(); g.ellipse(o.cx,o.cy-g2+dyk+8,20*s,5*s,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(o.cx,o.cy+g2+dyk+8,20*s,5*s,0,0,Math.PI*2); g.fill();
+  drawOneOtter(g,o.cx,o.cy-g2+dyk,s,o.facing,b1);
+  drawOneOtter(g,o.cx,o.cy+g2+dyk,s,o.facing,b2);
+  // each otter reaches an inner paw toward the other; they clasp in the open water between them
+  var hx=o.cx+o.facing*17*s, hy=o.cy+dyk;
+  g.strokeStyle='#7c5a3e'; g.lineWidth=3.4*s; g.lineCap='round';
+  g.beginPath(); g.moveTo(o.cx+o.facing*20*s,o.cy-g2+dyk+b1+4); g.lineTo(hx,hy); g.stroke();   // upper otter's arm
+  g.beginPath(); g.moveTo(o.cx+o.facing*20*s,o.cy+g2+dyk+b2-4); g.lineTo(hx,hy); g.stroke();   // lower otter's arm
+  g.fillStyle='#52371f'; g.beginPath(); g.ellipse(hx,hy,3.3*s,3.3*s,0,0,Math.PI*2); g.fill();   // clasped paws
+  // a little heart now and then would be cute but keep it calm; just a tiny sparkle
   g.restore();
 }
 function catLeg(g,hipX,hipY,phase,amt,color,w){
