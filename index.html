@@ -50,6 +50,44 @@
   #snd:active{transform:scale(.92);}
   #snd.on{background:rgba(255,255,255,.82);}
   #snd svg{width:21px;height:21px;}
+  #shop{
+    position:absolute;top:calc(env(safe-area-inset-top,0px) + 62px);right:14px;
+    width:42px;height:42px;border-radius:50%;border:none;
+    background:rgba(255,255,255,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    box-shadow:0 4px 14px rgba(40,70,65,.18);
+    pointer-events:auto;cursor:pointer;display:flex;align-items:center;justify-content:center;
+    color:#2c5450;transition:transform .15s ease,background .2s ease;
+  }
+  #shop:active{transform:scale(.92);}
+  #shop svg{width:22px;height:22px;}
+  #shopModal{
+    position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(30,55,52,.34);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+    pointer-events:auto;z-index:20;padding:20px;
+  }
+  #shopModal.open{display:flex;}
+  #shopCard{
+    background:rgba(255,255,255,.94);border-radius:22px;padding:20px 20px 14px;
+    width:min(88vw,340px);box-shadow:0 16px 44px rgba(40,70,65,.32);text-align:center;
+  }
+  #shopCard h2{color:#2c5450;font-size:18px;font-weight:700;}
+  #shopCard p.sub{color:rgba(44,84,80,.6);font-size:12.5px;font-weight:500;margin:3px 0 14px;}
+  #shopList{display:flex;flex-direction:column;gap:10px;}
+  .shopItem{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:rgba(143,200,198,.18);border:1px solid rgba(143,200,198,.42);
+    border-radius:14px;padding:9px 10px 9px 14px;
+  }
+  .shopItem .nm{color:#2c5450;font-weight:600;font-size:15px;}
+  .shopItem button{
+    border:none;border-radius:999px;padding:8px 16px;font-family:inherit;font-weight:700;font-size:13px;
+    background:#5ba0a8;color:#fff;cursor:pointer;transition:transform .12s ease,background .2s ease;
+  }
+  .shopItem button:active{transform:scale(.94);background:#4d8c93;}
+  #shopClose{
+    margin-top:13px;border:none;background:none;color:rgba(44,84,80,.6);
+    font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;padding:6px;
+  }
   #hint{
     position:absolute;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);
     transform:translateX(-50%);
@@ -72,6 +110,17 @@
   <div id="ui">
     <div id="title">little duck pond</div>
     <button id="snd" aria-label="Enable gentle sounds"></button>
+    <button id="shop" aria-label="Call a visitor">
+      <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="10.5" r="2"/><circle cx="10.3" cy="6.8" r="2"/><circle cx="13.7" cy="6.8" r="2"/><circle cx="18" cy="10.5" r="2"/><path d="M12 11.2c-2.7 0-4.9 1.9-4.9 4 0 1.6 1.3 2.6 2.8 2.6.8 0 1.4-.3 2.1-.3s1.3.3 2.1.3c1.5 0 2.8-1 2.8-2.6 0-2.1-2.2-4-4.9-4z"/></svg>
+    </button>
+    <div id="shopModal">
+      <div id="shopCard">
+        <h2>Call a visitor</h2>
+        <p class="sub">Summon a guest to the pond right now</p>
+        <div id="shopList"></div>
+        <button id="shopClose">Close</button>
+      </div>
+    </div>
     <div id="hint"><span>Tap the pond to feed the ducks</span></div>
   </div>
 
@@ -84,6 +133,10 @@ var canvas=document.getElementById('scene');
 var ctx=canvas.getContext('2d');
 var hintEl=document.getElementById('hint');
 var sndBtn=document.getElementById('snd');
+var shopBtn=document.getElementById('shop');
+var shopModal=document.getElementById('shopModal');
+var shopList=document.getElementById('shopList');
+var shopClose=document.getElementById('shopClose');
 
 var W=0,H=0,DPR=1,groundTop=0;
 var bg=null,bgctx=null,pelletSprite=null,vignetteGrad=null,waterPath=null;
@@ -682,7 +735,21 @@ function spookFlock(cat){ // a pounce just landed: send every duck scarpering it
 }
 
 // Registry of visitor makers. Add new animals here; one is picked at random per visit.
-var VISITORS=[ function(){ return new Cat(); } ];
+// Each visitor has a display name (for the shop) and a maker. Add new animals here and they
+// auto-appear both in the random rotation and in the "call a visitor" shop.
+var VISITORS=[
+  { name:'Ginger cat', make:function(){ return new Cat(); } },
+  { name:'Koi fish',   make:function(){ return new Koi(); } }
+];
+// Summon a specific guest right now (used by the shop), clearing any current one first.
+function summonVisitor(maker){
+  if(state.visitor){
+    if(state.visitor.spooks){ for(var i=0;i<state.ducks.length;i++) state.ducks[i].pickIdle(); }
+    state.alarm=null; state.huddle=null; state.scare=0;
+  }
+  state.visitor=maker();
+  scheduleNextVisitor();
+}
 
 function scheduleNextVisitor(){ state.nextVisitor=state.time+rand(VISITOR_MIN,VISITOR_MAX); }
 
@@ -714,7 +781,7 @@ function manageVisitor(dt){
   }
   // Spawn timing: wait for the interval, and don't barge in during active feeding.
   if(state.time>=state.nextVisitor && state.pellets.length===0){
-    state.visitor=VISITORS[randi(0,VISITORS.length-1)]();
+    state.visitor=VISITORS[randi(0,VISITORS.length-1)].make();
   }
 }
 
@@ -776,6 +843,51 @@ Cat.prototype.update=function(dt){
   if(inWater&&this.speed>6){ this.wakeT-=dt; if(this.wakeT<=0){ spawnRipple(this.x-this.facing*6*depthScale(this.y),this.y+6,12); this.wakeT=0.3; } }
   this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(1.8,4.5); }
   this.meowT-=dt; if(this.meowT<=0 && this.state!=='leave'){ audio.meow(); this.meowT=rand(4.5,9.5); }
+};
+
+// ----- Koi: a calm fish that glides under the pond and pops up to the surface now and then -----
+function waterPoint(){ // a random spot comfortably inside the water
+  for(var k=0;k<12;k++){ var y=rand(groundTop+24,H-24), edge=shoreX(y)-20; if(edge>30) return {x:rand(20,edge),y:y}; }
+  return {x:30,y:groundTop+(H-groundTop)*0.5};
+}
+function Koi(){
+  this.kind='koi'; this.spooks=false; this.done=false;        // ducks pay it no mind
+  var p=waterPoint(); this.x=p.x; this.y=p.y;
+  this.heading=rand(0,6.283); this.vx=Math.cos(this.heading)*6; this.vy=Math.sin(this.heading)*6; this.speed=0;
+  this.tail=rand(0,6.283); this.surface=0; this.surfacing=false; this.surfT=0; this.surfDur=0;
+  this.nextSurf=rand(1.5,4.5); this.life=rand(20,34); this.lifeT=0;
+  this.pal = Math.random()<0.5 ? {base:'#f4f1ec',patch:'#e8702a',spot:'#cf5a1c'} : {base:'#f0a23a',patch:'#cf5a1c',spot:'#f7ede0'};
+  var t=waterPoint(); this.tx=t.x; this.ty=t.y;
+}
+Koi.prototype.update=function(dt){
+  this.lifeT+=dt; this.tail+=dt*(5+this.speed*0.06);
+  // glide toward the target, gently
+  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1;
+  if(dd<14){ var t=waterPoint(); this.tx=t.x; this.ty=t.y; }
+  var maxSpeed=20+this.surface*8;
+  var desVx=dx/dd*maxSpeed, desVy=dy/dd*maxSpeed;
+  var steer=Math.min(1,dt*1.8);
+  this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  this.x+=this.vx*dt; this.y+=this.vy*dt;
+  // stay under water: if nosing past the shore, ease back and turn away
+  var edge=shoreX(this.y)-14;
+  if(this.x>edge){ this.x=edge; this.vx-=Math.abs(this.vx)*0.6+6; }
+  this.x=clamp(this.x,12,W); this.y=clamp(this.y,groundTop+18,H-14);
+  this.speed=Math.hypot(this.vx,this.vy);
+  if(this.speed>3) this.heading=Math.atan2(this.vy,this.vx);
+  // surfacing cycle: rise, dwell, sink
+  if(this.surfacing){
+    this.surfT+=dt; var pr=clamp(this.surfT/this.surfDur,0,1);
+    this.surface=Math.sin(pr*Math.PI);
+    if(this.surfT>=this.surfDur){ this.surfacing=false; this.surface=0; this.nextSurf=rand(3.5,7.5); }
+  } else {
+    this.surface+=(0-this.surface)*Math.min(1,dt*4);
+    this.nextSurf-=dt;
+    if(this.nextSurf<=0 && this.lifeT<this.life){ this.surfacing=true; this.surfT=0; this.surfDur=rand(1.3,2.4); spawnRipple(this.x,this.y,14); audio.bloop(); }
+  }
+  if(this.surfacing && this.surface>0.4 && Math.random()<dt*3) spawnRipple(this.x+rand(-4,4),this.y+rand(-3,3),9);
+  // leave once its visit is up and it's back under
+  if(this.lifeT>this.life && this.surface<0.05) this.done=true;
 };
 
 function update(dt){
@@ -903,7 +1015,48 @@ function drawReed(g,rd){
     g.strokeStyle='#5f923c'; g.lineWidth=1; g.beginPath(); g.moveTo(tx,ty); g.lineTo(tx+sway*0.08,ty-rd.h*0.14); g.stroke();
   }
 }
-function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); }
+function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); }
+function drawKoi(g,k){
+  var ds=depthScale(k.y), s=ds*0.95, P=k.pal, sf=k.surface;
+  g.save();
+  g.translate(k.x,k.y); g.rotate(k.heading); g.scale(s,s);
+  var op=0.42+0.5*sf;                 // faint when deep, clear at the surface
+  g.globalAlpha=op;
+  // tail fin (forked, swishing)
+  var sw=Math.sin(k.tail)*3.2;
+  g.fillStyle=P.base;
+  g.beginPath(); g.moveTo(-10,0);
+  g.quadraticCurveTo(-17,-5+sw,-21,-8+sw); g.quadraticCurveTo(-16,-2+sw,-15,0);
+  g.quadraticCurveTo(-16,2+sw,-21,8+sw); g.quadraticCurveTo(-17,5+sw,-10,0); g.closePath(); g.fill();
+  // pectoral fins
+  g.fillStyle=P.base;
+  g.beginPath(); g.ellipse(3,5.6,4.2,2.2,0.7,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(3,-5.6,4.2,2.2,-0.7,0,Math.PI*2); g.fill();
+  // body
+  g.fillStyle=P.base;
+  g.beginPath();
+  g.moveTo(13,0);
+  g.quadraticCurveTo(9,-5.4,0,-5.2); g.quadraticCurveTo(-8,-4.6,-11,-1.4);
+  g.quadraticCurveTo(-12,0,-11,1.4); g.quadraticCurveTo(-8,4.6,0,5.2);
+  g.quadraticCurveTo(9,5.4,13,0); g.closePath(); g.fill();
+  // koi patches
+  g.fillStyle=P.patch;
+  g.beginPath(); g.ellipse(6,-0.5,4.2,3.4,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(-4,1,3.6,3,0,0,Math.PI*2); g.fill();
+  g.fillStyle=P.spot;
+  g.beginPath(); g.ellipse(-7.5,-1.5,1.8,1.6,0,0,Math.PI*2); g.fill();
+  // eyes (top-down, one each side of the head)
+  g.fillStyle='rgba(30,28,24,0.9)';
+  g.beginPath(); g.ellipse(8.5,2.6,1.1,1.1,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(8.5,-2.6,1.1,1.1,0,0,Math.PI*2); g.fill();
+  // a wet glint along the back when it breaks the surface
+  if(sf>0.35){ g.globalAlpha=(sf-0.35)*0.7; g.fillStyle='rgba(255,255,255,0.9)';
+    g.beginPath(); g.ellipse(1,-1.6,7,1.4,0,0,Math.PI*2); g.fill(); }
+  // a soft submerged tint when deep
+  if(sf<0.6){ g.globalAlpha=(0.6-sf)*0.5; g.fillStyle='rgba(70,140,150,1)';
+    g.beginPath(); g.ellipse(0,0,13,6,0,0,Math.PI*2); g.fill(); }
+  g.restore();
+}
 function catLeg(g,hipX,hipY,phase,amt,color,w){
   var footX=hipX+Math.sin(phase)*5*amt;
   var footY=-Math.max(0,Math.sin(phase+Math.PI/2))*4*amt;
@@ -1244,6 +1397,15 @@ var audio=(function(){
       o.start(t); o.stop(t+0.62);
     }catch(e){}
   }
+  function bloop(){
+    if(!actx||!enabled) return;
+    try{
+      var t=actx.currentTime, o=actx.createOscillator(), g=actx.createGain();
+      o.type='sine'; o.frequency.setValueAtTime(300,t); o.frequency.exponentialRampToValueAtTime(150,t+0.16);
+      g.gain.setValueAtTime(0.0001,t); g.gain.linearRampToValueAtTime(0.05,t+0.02); g.gain.exponentialRampToValueAtTime(0.0001,t+0.3);
+      o.connect(g); g.connect(master); o.start(t); o.stop(t+0.32);
+    }catch(e){}
+  }
   function setEnabled(on){
     ensure(); if(!actx) return false;
     enabled=on;
@@ -1264,7 +1426,7 @@ var audio=(function(){
     }catch(e){}
     return true;
   }
-  return { toggle:function(){ return setEnabled(!enabled); }, isOn:function(){ return enabled; }, plip:plip, nom:nom, happy:happy, meow:meow };
+  return { toggle:function(){ return setEnabled(!enabled); }, isOn:function(){ return enabled; }, plip:plip, nom:nom, happy:happy, meow:meow, bloop:bloop };
 })();
 
 // ---------- ui ----------
@@ -1276,6 +1438,26 @@ function updateSndIcon(){
     : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>';
 }
 sndBtn.addEventListener('click',function(e){ e.stopPropagation(); audio.toggle(); updateSndIcon(); sndBtn.classList.toggle('on',audio.isOn()); });
+
+// ---------- shop (call a visitor on demand) ----------
+function buildShop(){
+  shopList.innerHTML='';
+  for(var i=0;i<VISITORS.length;i++){
+    (function(v){
+      var row=document.createElement('div'); row.className='shopItem';
+      var nm=document.createElement('span'); nm.className='nm'; nm.textContent=v.name;
+      var btn=document.createElement('button'); btn.textContent='Call';
+      btn.addEventListener('click',function(e){ e.stopPropagation(); summonVisitor(v.make); closeShop(); hideHint(); });
+      row.appendChild(nm); row.appendChild(btn); shopList.appendChild(row);
+    })(VISITORS[i]);
+  }
+}
+function openShop(){ buildShop(); shopModal.classList.add('open'); }
+function closeShop(){ shopModal.classList.remove('open'); }
+shopBtn.addEventListener('click',function(e){ e.stopPropagation(); openShop(); });
+shopClose.addEventListener('click',function(e){ e.stopPropagation(); closeShop(); });
+shopModal.addEventListener('click',function(e){ if(e.target===shopModal) closeShop(); });
+shopModal.addEventListener('pointerdown',function(e){ e.stopPropagation(); });
 
 // ---------- input ----------
 var pressing=false,lastDropX=0,lastDropY=0,lastDropT=0;
