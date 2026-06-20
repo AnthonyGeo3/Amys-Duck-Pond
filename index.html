@@ -92,9 +92,12 @@ var shorePts=[];
 var ducksInit=false,running=true,last=0,hinted=false;
 
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
-var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null};
+var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null,
+  visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0};
 // Seconds of no feeding (and no pellets left) before the flock groups up and falls asleep.
 var SLEEP_DELAY=120;
+// A random cute animal wanders in once every VISITOR_MIN..VISITOR_MAX seconds, one at a time.
+var VISITOR_MIN=300, VISITOR_MAX=600;
 
 // Static star map generated once
 var stars=[]; 
@@ -190,6 +193,12 @@ Duck.prototype.update=function(dt){
   if(this.state==='seek'&&this.targetPellet){ tx=this.targetPellet.x; ty=this.targetPellet.y; maxSpeed=RUN; }
   else if(this.state==='wander'){ tx=this.tx; ty=this.ty; maxSpeed=WALK; }
   else if(this.state==='toRoost'){ tx=this.tx; ty=this.ty; maxSpeed=WALK*0.6; }
+  else if(this.state==='huddle'){
+    var hub=state.huddle||{x:this.x,y:this.y}, sc=state.scare||0;
+    var ha=this.huddleSlot*2.399963, hr=(15+(this.huddleSlot%3)*9)*(1+sc*1.9);
+    tx=clamp(hub.x+Math.cos(ha)*hr,22,W-22); ty=clamp(hub.y+Math.sin(ha)*hr,groundTop+22,H-22);
+    maxSpeed=WALK*(1.5+sc*2.6); // scurry, faster when startled
+  }
   else { tx=this.x; ty=this.y; maxSpeed=0; }
 
   var dx=tx-this.x, dy=ty-this.y, dd=Math.hypot(dx,dy)||1;
@@ -247,6 +256,11 @@ Duck.prototype.update=function(dt){
     this.pattering=false;
     this.wingFlap=Math.sin(this.stateT*22)*0.4; // a sleepy stretch of the wings
     this.hop+=(0-this.hop)*Math.min(1,dt*9);
+  } else if(this.state==='huddle'){
+    this.pattering=false;
+    var sc2=state.scare||0;
+    if(sc2>0.25){ this.wingFlap=Math.sin(this.walkPhase*3+this.seed)*0.32*sc2; this.hop=Math.abs(Math.sin(this.walkPhase*2))*sc2*1.6; }
+    else { this.wingFlap+=(0-this.wingFlap)*Math.min(1,dt*9); this.hop+=(0-this.hop)*Math.min(1,dt*9); }
   } else {
     this.pattering=false;
     this.wingFlap+=(0-this.wingFlap)*Math.min(1,dt*9);
@@ -565,7 +579,7 @@ function assignFood(){
   for(i=0;i<pellets.length;i++) pellets[i].claims=0;
   for(var d=0;d<state.ducks.length;d++){
     dk=state.ducks[d];
-    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake') continue;
+    if(dk.state==='eat'||dk.state==='happy'||dk.state==='sleep'||dk.state==='toRoost'||dk.state==='wake'||dk.state==='huddle') continue;
     var best=null,bestScore=Infinity,bestDist=0;
     for(i=0;i<pellets.length;i++){
       var pe=pellets[i];
@@ -615,6 +629,7 @@ function updateClouds(dt){
 
 function manageSleep(){
   var ducks=state.ducks, i, d;
+  if(state.alarm) return; // a visitor has the flock's attention; no napping
   if(state.sleeping){
     // Any fresh food wakes the whole flock.
     if(state.pellets.length>0){
@@ -641,7 +656,99 @@ function manageSleep(){
   }
 }
 
+// ---------- visitors (random cute guests) ----------
+function flockCentroid(){
+  var cx=0,cy=0,n=state.ducks.length||1;
+  for(var i=0;i<state.ducks.length;i++){ cx+=state.ducks[i].x; cy+=state.ducks[i].y; }
+  return {x:cx/n,y:cy/n};
+}
+function landX(y,pad){ return shoreX(y)+(pad||16); } // keep land animals out of the water
+
+// Registry of visitor makers. Add new animals here; one is picked at random per visit.
+var VISITORS=[ function(){ return new Cat(); } ];
+
+function scheduleNextVisitor(){ state.nextVisitor=state.time+rand(VISITOR_MIN,VISITOR_MAX); }
+
+function manageVisitor(dt){
+  if(state.visitor){
+    state.visitor.update(dt);
+    state.scare=Math.max(0,(state.scare||0)-dt*1.6); // startle fades
+    if(state.visitor.spooks){
+      // Flock reaction: wake, gather and keep wary of the guest.
+      state.sleeping=false; state.alarm=state.visitor;
+      var fc=flockCentroid(), v=state.visitor;
+      var dx=fc.x-v.x, dy=fc.y-v.y, dd=Math.hypot(dx,dy)||1;
+      state.huddle={ x:clamp(fc.x+dx/dd*42,40,W-40), y:clamp(fc.y+dy/dd*42,groundTop+40,H-40) };
+      for(var i=0;i<state.ducks.length;i++){
+        var dk=state.ducks[i];
+        if(dk.state!=='huddle'){ dk.state='huddle'; dk.huddleSlot=i; dk.targetPellet=null; }
+      }
+    }
+    if(state.visitor.done){
+      var wasSpook=state.visitor.spooks;
+      state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0;
+      if(wasSpook){ for(var j=0;j<state.ducks.length;j++) state.ducks[j].pickIdle(); state.lastFeed=state.time; }
+      scheduleNextVisitor();
+    }
+    return;
+  }
+  // Spawn timing: wait for the interval, and don't barge in during active feeding.
+  if(state.time>=state.nextVisitor && state.pellets.length===0){
+    state.visitor=VISITORS[randi(0,VISITORS.length-1)]();
+  }
+}
+
+// ----- Ginger cat: saunters in, play-stalks the ducks, pounces, wanders off -----
+function Cat(){
+  this.kind='cat'; this.spooks=true; this.done=false;
+  this.y=clamp(groundTop+(H-groundTop)*rand(0.30,0.80),groundTop+50,H-50);
+  this.x=W+34; this.facing=-1;             // strolls in from the right (always grass)
+  this.vx=0; this.vy=0; this.speed=0; this.walkPhase=0;
+  this.state='enter'; this.stateT=0; this.lifeT=0; this.life=rand(20,30);
+  this.crouch=0; this.hop=0; this.lunge=0; this.tail=Math.random()*6.283; this.blink=0; this.blinkT=rand(1.5,4);
+  this.tx=clamp(W*rand(0.6,0.85),60,W-30); this.ty=this.y;
+}
+Cat.prototype.aim=function(toFlock,pad,stopAt){
+  var t = toFlock? flockCentroid() : {x:this.tx,y:this.ty};
+  var ty=clamp(t.y,groundTop+40,H-40);
+  var tx=Math.max(t.x, landX(ty,pad||18)); // never wade into the pond
+  if(stopAt){ var dx=tx-this.x, dy=ty-this.y, dd=Math.hypot(dx,dy)||1; tx=this.x+dx/dd*Math.max(0,dd-stopAt); ty=this.y+dy/dd*Math.max(0,dd-stopAt); }
+  this.tx=clamp(tx,30,W+40); this.ty=ty;
+};
+Cat.prototype.update=function(dt){
+  this.stateT+=dt; this.lifeT+=dt; this.tail+=dt*(this.state==='stalk'?6:3);
+  var maxSpeed=0, crouchTarget=0;
+  if(this.state==='enter'){ this.aim(false); maxSpeed=64;
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<8){ this.state='stalk'; this.stateT=0; }
+  } else if(this.state==='stalk'){ this.aim(true,40,46); maxSpeed=24; crouchTarget=0.85;
+    if(this.stateT>rand(1.4,2.6)+0.0){ this.state='pounce'; this.stateT=0; this.lunge=0; state.scare=1; this.hop=0; }
+  } else if(this.state==='pounce'){ this.aim(true,24,10); maxSpeed=190; crouchTarget=0.15;
+    this.lunge=Math.min(1,this.stateT*6); this.hop=Math.sin(clamp(this.stateT/0.5,0,1)*Math.PI)*6;
+    if(this.stateT>0.5){ this.state='recover'; this.stateT=0; }
+  } else if(this.state==='recover'){ maxSpeed=0; crouchTarget=0.1; this.lunge=0;
+    if(this.stateT>rand(1.2,2.2)){
+      if(this.lifeT>this.life){ this.state='leave'; this.stateT=0; this.tx=W+60; this.ty=clamp(this.y,groundTop+40,H-40); }
+      else { this.state='stalk'; this.stateT=0; }
+    }
+  } else if(this.state==='leave'){ this.aim(false); maxSpeed=78;
+    if(this.x>W+30) this.done=true;
+  }
+  // steering (same feel as the ducks)
+  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1, des=0;
+  var desVx=0,desVy=0; if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
+  var steer=Math.min(1,dt*(this.state==='pounce'?12:6));
+  this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  this.x+=this.vx*dt; this.y+=this.vy*dt;
+  this.y=clamp(this.y,groundTop+30,H-20);
+  this.speed=Math.hypot(this.vx,this.vy);
+  if(Math.abs(this.vx)>5) this.facing=this.vx>0?1:-1;
+  this.walkPhase+=dt*(2.5+this.speed*0.06);
+  this.crouch+=(crouchTarget-this.crouch)*Math.min(1,dt*5);
+  this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(1.8,4.5); }
+};
+
 function update(dt){
+  manageVisitor(dt);
   manageSleep();
   assignFood();
   for(var i=0;i<state.ducks.length;i++) state.ducks[i].update(dt);
@@ -713,13 +820,15 @@ function drawScene(g){
   for(i=0;i<state.pellets.length;i++) items.push({y:state.pellets[i].y,k:1,o:state.pellets[i]});
   for(i=0;i<state.lilies.length;i++) items.push({y:state.lilies[i].y,k:2,o:state.lilies[i]});
   for(i=0;i<state.reeds.length;i++) items.push({y:state.reeds[i].y,k:3,o:state.reeds[i]});
+  if(state.visitor) items.push({y:state.visitor.y,k:4,o:state.visitor});
   items.sort(function(a,b){return a.y-b.y;});
   for(i=0;i<items.length;i++){
     var it=items[i];
     if(it.k===0) it.o.draw(g);
     else if(it.k===1) drawPellet(g,it.o);
     else if(it.k===2) drawLily(g,it.o);
-    else drawReed(g,it.o);
+    else if(it.k===3) drawReed(g,it.o);
+    else if(it.k===4) drawVisitor(g,it.o);
   }
 }
 function drawPellet(g,pe){
@@ -762,6 +871,102 @@ function drawReed(g,rd){
     g.fillStyle='#7a4a28'; g.beginPath(); g.ellipse(tx,ty+rd.h*0.14,2.6,rd.h*0.15,0,0,Math.PI*2); g.fill();
     g.strokeStyle='#5f923c'; g.lineWidth=1; g.beginPath(); g.moveTo(tx,ty); g.lineTo(tx+sway*0.08,ty-rd.h*0.14); g.stroke();
   }
+}
+function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); }
+function catLeg(g,hipX,hipY,phase,amt,color,w){
+  var footX=hipX+Math.sin(phase)*5*amt;
+  var footY=-Math.max(0,Math.sin(phase+Math.PI/2))*4*amt;
+  var kneeX=(hipX+footX)/2+1.5, kneeY=(hipY+footY)/2;
+  g.strokeStyle=color; g.lineWidth=w; g.lineCap='round';
+  g.beginPath(); g.moveTo(hipX,hipY); g.quadraticCurveTo(kneeX,kneeY,footX,footY); g.stroke();
+  g.fillStyle=color; g.beginPath(); g.ellipse(footX,footY-0.4,2.5,1.5,0,0,Math.PI*2); g.fill();
+}
+function drawCat(g,cat){
+  var ds=depthScale(cat.y), s=ds*1.04;
+  var P={fur:'#e8913f',dark:'#c9762a',cream:'#f7e6cf',stripe:'#b9661c',ear:'#eda07f',earIn:'#e89f83',nose:'#d56a72',eye:'#4a8a3c'};
+  g.save();
+  g.translate(cat.x,cat.y);
+  g.fillStyle='rgba(45,55,45,0.16)';
+  g.beginPath(); g.ellipse(0,0,23*s,5*s,0,0,Math.PI*2); g.fill();
+  g.scale(cat.facing,1);
+  g.translate(0,-(cat.hop||0)*s);
+  g.scale(s,s);
+
+  var cr=cat.crouch||0, lunge=cat.lunge||0, amt=clamp(cat.speed/120,0.12,1);
+  var bodyY=-16+cr*3.5;
+  var rearX=-15, rearY=bodyY-1-cr*1.2;
+  var shoulderX=12, shoulderY=bodyY+1+cr*3;
+  var headX=23+lunge*8, headY=-25+cr*9+lunge*3;
+  var ph=cat.walkPhase;
+
+  // far legs (behind body) — slightly darker
+  catLeg(g,rearX+2,rearY+8,ph+Math.PI*0.5,amt,P.dark,4.2);
+  catLeg(g,shoulderX-1,shoulderY+7,ph+Math.PI*1.5,amt,P.dark,4.2);
+
+  // tail (behind), with a swish and darker tip
+  var sw=Math.sin(cat.tail)*7;
+  g.strokeStyle=P.fur; g.lineWidth=6.4; g.lineCap='round';
+  var t0x=rearX-5,t0y=rearY-1, t1x=rearX-19,t1y=rearY-8+sw*0.5, t2x=rearX-22+sw*0.5,t2y=rearY-22+sw;
+  g.beginPath(); g.moveTo(t0x,t0y); g.quadraticCurveTo(t1x,t1y,t2x,t2y); g.stroke();
+  g.strokeStyle=P.stripe; g.lineWidth=5.4; g.lineCap='round';
+  g.beginPath(); g.moveTo(lerp(t1x,t2x,0.55),lerp(t1y,t2y,0.55)); g.quadraticCurveTo(t2x,t2y,t2x,t2y); g.stroke();
+
+  // --- BODY ---
+  g.fillStyle=P.fur;
+  g.beginPath(); g.ellipse(rearX,rearY,11.5,10.5,0.1,0,Math.PI*2); g.fill();   // haunch
+  g.beginPath(); g.ellipse(-1,bodyY,19,8.6,0,0,Math.PI*2); g.fill();           // barrel
+  g.beginPath(); g.ellipse(shoulderX,shoulderY-1,9.2,8.2,0,0,Math.PI*2); g.fill(); // chest
+  g.fillStyle=P.cream;
+  g.beginPath(); g.ellipse(2,bodyY+5.2,14,4.4,0,0,Math.PI*2); g.fill();        // belly
+  // tabby back stripes
+  g.strokeStyle=P.stripe; g.lineWidth=1.8; g.lineCap='round';
+  for(var i=0;i<4;i++){ var bx=-8+i*7; g.beginPath(); g.moveTo(bx,bodyY-8.2); g.quadraticCurveTo(bx-2,bodyY-3,bx-1,bodyY-1); g.stroke(); }
+
+  // near legs (in front of body)
+  catLeg(g,rearX+3,rearY+8,ph+Math.PI,amt,P.fur,4.6);
+  catLeg(g,shoulderX,shoulderY+7,ph,amt,P.fur,4.8);
+
+  // --- NECK + HEAD ---
+  g.fillStyle=P.fur;
+  g.beginPath(); g.moveTo(shoulderX-2,shoulderY-6);
+  g.quadraticCurveTo(headX-6,headY+6,headX-2,headY+5);
+  g.lineTo(headX+3,headY+7); g.quadraticCurveTo(shoulderX+5,shoulderY-1,shoulderX+4,shoulderY-7); g.closePath(); g.fill();
+
+  // ears (flatten back when stalking/pouncing)
+  var earBack=clamp(cr,0,1);
+  function ear(sign){
+    g.save(); g.translate(headX+sign*4.4,headY-5.6); g.rotate(sign*(0.15+earBack*0.5));
+    g.fillStyle=P.fur; g.beginPath(); g.moveTo(-3.4,2); g.lineTo(sign*0.6,-7.2-(1-earBack)*1.5); g.lineTo(3.4,2); g.closePath(); g.fill();
+    g.fillStyle=P.earIn; g.beginPath(); g.moveTo(-1.7,1.2); g.lineTo(sign*0.4,-4.4); g.lineTo(1.9,1.2); g.closePath(); g.fill();
+    g.restore();
+  }
+  ear(-1); ear(1);
+  // head
+  g.fillStyle=P.fur; g.beginPath(); g.ellipse(headX,headY,8.2,7.4,0,0,Math.PI*2); g.fill();
+  // muzzle
+  g.fillStyle=P.cream; g.beginPath(); g.ellipse(headX+4.5,headY+3.2,4.2,3.2,0,0,Math.PI*2); g.fill();
+  // forehead stripes
+  g.strokeStyle=P.stripe; g.lineWidth=1.3;
+  g.beginPath(); g.moveTo(headX-1.5,headY-7); g.lineTo(headX-1,headY-3); g.moveTo(headX-4,headY-6.2); g.lineTo(headX-3,headY-3); g.moveTo(headX+1.5,headY-6.6); g.lineTo(headX+1.4,headY-3); g.stroke();
+  // nose + mouth
+  g.fillStyle=P.nose; g.beginPath(); g.moveTo(headX+7.4,headY+1.6); g.lineTo(headX+8.8,headY+1.6); g.lineTo(headX+8.1,headY+2.8); g.closePath(); g.fill();
+  g.strokeStyle=P.dark; g.lineWidth=0.8; g.beginPath(); g.moveTo(headX+8.1,headY+2.8); g.lineTo(headX+8.1,headY+4); g.moveTo(headX+8.1,headY+4); g.quadraticCurveTo(headX+6.5,headY+4.6,headX+5.6,headY+3.8); g.stroke();
+  // eye (almond; a slit when stalking; line when blinking)
+  var ex=headX+2.2, ey=headY-0.6;
+  if(cat.blink>0){ g.strokeStyle=P.dark; g.lineWidth=1; g.beginPath(); g.moveTo(ex-2,ey); g.quadraticCurveTo(ex,ey+1,ex+2,ey); g.stroke(); }
+  else {
+    g.fillStyle=P.eye; g.beginPath(); g.ellipse(ex,ey,2.5,cr>0.5?1.5:2.6,0,0,Math.PI*2); g.fill();
+    g.fillStyle='#1c1c14'; g.beginPath(); g.ellipse(ex+0.4,ey,cr>0.5?0.7:1.1,cr>0.5?1.4:1.8,0,0,Math.PI*2); g.fill();
+    g.fillStyle='rgba(255,255,255,0.85)'; g.beginPath(); g.ellipse(ex-0.5,ey-0.9,0.6,0.7,0,0,Math.PI*2); g.fill();
+  }
+  // whiskers
+  g.strokeStyle='rgba(255,255,255,0.7)'; g.lineWidth=0.6;
+  g.beginPath();
+  g.moveTo(headX+5.5,headY+2.2); g.lineTo(headX+13,headY+0.6);
+  g.moveTo(headX+5.5,headY+3); g.lineTo(headX+13,headY+3.4);
+  g.moveTo(headX+5.5,headY+3.6); g.lineTo(headX+12.5,headY+6); g.stroke();
+
+  g.restore();
 }
 function drawHeart(g,x,y,s,a){
   g.save(); g.globalAlpha=a; g.fillStyle='#ef8aa0';
@@ -1061,6 +1266,7 @@ document.addEventListener('visibilitychange',function(){
 resize();
 updateSndIcon();
 syncWeather();
+scheduleNextVisitor();
 last=performance.now();
 requestAnimationFrame(frame);
 requestAnimationFrame(function(){ canvas.classList.add('show'); });
