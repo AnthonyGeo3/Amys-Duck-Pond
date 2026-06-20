@@ -157,6 +157,7 @@ function Duck(o){
   this.tx=this.x; this.ty=this.y; this.targetPellet=null;
   this.swimming=isWater(this.x,this.y); this.prevSwim=this.swimming; this.wakeT=0;
   this.drowsy=0; this.zzzT=rand(0.8,3.2);
+  this.panicT=0; this.panicAng=0;
   this.pickWander();
 }
 Duck.prototype.pickWander=function(){
@@ -195,10 +196,18 @@ Duck.prototype.update=function(dt){
   else if(this.state==='wander'){ tx=this.tx; ty=this.ty; maxSpeed=WALK; }
   else if(this.state==='toRoost'){ tx=this.tx; ty=this.ty; maxSpeed=WALK*0.6; }
   else if(this.state==='huddle'){
-    var hub=state.huddle||{x:this.x,y:this.y}, sc=state.scare||0;
-    var ha=this.huddleSlot*2.399963, hr=(15+(this.huddleSlot%3)*9)*(1+sc*1.9);
-    tx=clamp(hub.x+Math.cos(ha)*hr,22,W-22); ty=clamp(hub.y+Math.sin(ha)*hr,groundTop+22,H-22);
-    maxSpeed=WALK*(1.5+sc*2.6); // scurry, faster when startled
+    if(this.panicT>0){
+      // headless-chicken scatter: bolt in your own veering direction for a beat
+      this.panicT-=dt; this.panicAng+=rand(-1,1)*dt*5;
+      tx=clamp(this.x+Math.cos(this.panicAng)*70,18,W-18); ty=clamp(this.y+Math.sin(this.panicAng)*70,groundTop+18,H-18);
+      maxSpeed=RUN*0.95;
+    } else {
+      // calm again: gather back into a loose huddle
+      var hub=state.huddle||{x:this.x,y:this.y}, sc=state.scare||0;
+      var ha=this.huddleSlot*2.399963, hr=(15+(this.huddleSlot%3)*9)*(1+sc*1.0);
+      tx=clamp(hub.x+Math.cos(ha)*hr,22,W-22); ty=clamp(hub.y+Math.sin(ha)*hr,groundTop+22,H-22);
+      maxSpeed=WALK*(1.4+sc*1.4);
+    }
   }
   else { tx=this.x; ty=this.y; maxSpeed=0; }
 
@@ -259,8 +268,8 @@ Duck.prototype.update=function(dt){
     this.hop+=(0-this.hop)*Math.min(1,dt*9);
   } else if(this.state==='huddle'){
     this.pattering=false;
-    var sc2=state.scare||0;
-    if(sc2>0.25){ this.wingFlap=Math.sin(this.walkPhase*3+this.seed)*0.32*sc2; this.hop=Math.abs(Math.sin(this.walkPhase*2))*sc2*1.6; }
+    var fl=Math.max(state.scare||0, this.panicT>0?0.95:0);
+    if(fl>0.25){ this.wingFlap=Math.sin(this.walkPhase*3+this.seed)*0.34*fl; this.hop=Math.abs(Math.sin(this.walkPhase*2.5))*fl*1.8; }
     else { this.wingFlap+=(0-this.wingFlap)*Math.min(1,dt*9); this.hop+=(0-this.hop)*Math.min(1,dt*9); }
   } else {
     this.pattering=false;
@@ -664,6 +673,13 @@ function flockCentroid(){
   return {x:cx/n,y:cy/n};
 }
 function landX(y,pad){ return shoreX(y)+(pad||16); } // keep land animals out of the water
+function spookFlock(cat){ // a pounce just landed: send every duck scarpering its own way
+  state.scare=1;
+  for(var i=0;i<state.ducks.length;i++){
+    var d=state.ducks[i], away=Math.atan2(d.y-cat.y,d.x-cat.x);
+    d.panicAng=away+rand(-1.0,1.0); d.panicT=rand(0.7,1.4);
+  }
+}
 
 // Registry of visitor makers. Add new animals here; one is picked at random per visit.
 var VISITORS=[ function(){ return new Cat(); } ];
@@ -710,7 +726,7 @@ function Cat(){
   this.vx=0; this.vy=0; this.speed=0; this.walkPhase=0;
   this.state='enter'; this.stateT=0; this.lifeT=0; this.life=rand(20,30);
   this.crouch=0; this.hop=0; this.lunge=0; this.tail=Math.random()*6.283; this.blink=0; this.blinkT=rand(1.5,4);
-  this.meowT=rand(1.5,4); this.wakeT=0;
+  this.meowT=rand(1.5,4); this.wakeT=0; this.pounced=false;
   this.tx=clamp(W*rand(0.6,0.85),60,W-30); this.ty=this.y;
 }
 Cat.prototype.aim=function(toFlock,opts){
@@ -726,30 +742,30 @@ Cat.prototype.update=function(dt){
   this.stateT+=dt; this.lifeT+=dt; this.tail+=dt*(this.state==='stalk'?6:3);
   var maxSpeed=0, crouchTarget=0;
   if(this.state==='enter'){ this.aim(false); maxSpeed=64;
-    if(Math.hypot(this.tx-this.x,this.ty-this.y)<8){ this.state='stalk'; this.stateT=0; }
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<8){ this.state='stalk'; this.stateT=0; this.pounced=false; }
   } else if(this.state==='stalk'){ this.aim(true,{water:true,stopAt:34}); maxSpeed=24; crouchTarget=0.85;
     if(this.stateT>rand(1.4,2.6)+0.0){ this.state='pounce'; this.stateT=0; this.lunge=0; this.hop=0; }
-  } else if(this.state==='pounce'){ this.aim(true,{water:true,stopAt:8}); maxSpeed=170; crouchTarget=0.15;
+  } else if(this.state==='pounce'){ this.aim(true,{water:true,stopAt:16}); maxSpeed=170; crouchTarget=0.15;
     this.lunge=Math.min(1,this.stateT*6); this.hop=Math.sin(clamp(this.stateT/0.5,0,1)*Math.PI)*6;
-    var fcp=flockCentroid(); if(Math.hypot(fcp.x-this.x,fcp.y-this.y)<42) state.scare=1; // they only bolt once he's right on them
+    if(!this.pounced){ var fcp=flockCentroid(); if(Math.hypot(fcp.x-this.x,fcp.y-this.y)<58){ spookFlock(this); this.pounced=true; } } // they scatter as he commits to the pounce
     if(this.stateT>0.5){ this.state='recover'; this.stateT=0; }
   } else if(this.state==='recover'){ maxSpeed=0; crouchTarget=0.1; this.lunge=0;
     if(this.stateT>rand(1.2,2.2)){
       if(this.lifeT>this.life){ this.state='leave'; this.stateT=0; this.tx=W+60; this.ty=clamp(this.y,groundTop+40,H-40); }
-      else { this.state='stalk'; this.stateT=0; }
+      else { this.state='stalk'; this.stateT=0; this.pounced=false; }
     }
   } else if(this.state==='leave'){ this.aim(false); maxSpeed=78;
     if(this.x>W+30) this.done=true;
   }
   // Cats hate water: he'll wade after the ducks but at a crawl, so they can paddle clear.
   var inWater=isWater(this.x,this.y);
-  if(inWater) maxSpeed*=0.32;
+  if(inWater) maxSpeed*=0.40;
   // steering (same feel as the ducks)
   var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1;
   var desVx=0,desVy=0; if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
   var steer=Math.min(1,dt*(this.state==='pounce'?12:6));
   this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
-  if(inWater){ this.vx*=0.9; this.vy*=0.9; var sp=Math.hypot(this.vx,this.vy); if(sp>72){ this.vx=this.vx/sp*72; this.vy=this.vy/sp*72; } } // bogs down in the pond
+  if(inWater){ this.vx*=0.92; this.vy*=0.92; var sp=Math.hypot(this.vx,this.vy); if(sp>80){ this.vx=this.vx/sp*80; this.vy=this.vy/sp*80; } } // wades, but slower than on land
   this.x+=this.vx*dt; this.y+=this.vy*dt;
   this.y=clamp(this.y,groundTop+30,H-20);
   this.speed=Math.hypot(this.vx,this.vy);
