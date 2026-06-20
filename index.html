@@ -810,7 +810,7 @@ function Cat(){
   this.vx=0; this.vy=0; this.speed=0; this.walkPhase=0;
   this.state='enter'; this.stateT=0; this.lifeT=0; this.life=rand(20,30);
   this.crouch=0; this.hop=0; this.lunge=0; this.tail=Math.random()*6.283; this.blink=0; this.blinkT=rand(1.5,4);
-  this.meowT=rand(1.5,4); this.wakeT=0; this.pounced=false;
+  this.meowT=rand(1.5,4); this.wakeT=0; this.pounced=false; this.pounceRange=rand(74,104);
   this.tx=clamp(W*rand(0.6,0.85),60,W-30); this.ty=this.y;
 }
 Cat.prototype.aim=function(toFlock,opts){
@@ -827,8 +827,12 @@ Cat.prototype.update=function(dt){
   var maxSpeed=0, crouchTarget=0;
   if(this.state==='enter'){ this.aim(false); maxSpeed=64;
     if(Math.hypot(this.tx-this.x,this.ty-this.y)<8){ this.state='stalk'; this.stateT=0; this.pounced=false; }
-  } else if(this.state==='stalk'){ this.aim(true,{water:true,stopAt:34}); maxSpeed=24; crouchTarget=0.85;
-    if(this.stateT>rand(1.4,2.6)+0.0){ this.state='pounce'; this.stateT=0; this.lunge=0; this.hop=0; }
+  } else if(this.state==='stalk'){ this.aim(true,{water:true});
+    var fcs=flockCentroid(), dToFlock=Math.hypot(fcs.x-this.x,fcs.y-this.y);
+    if(dToFlock>150){ maxSpeed=58; crouchTarget=0.3; }    // still far: trot over to get near
+    else { maxSpeed=30; crouchTarget=0.85; }              // close enough: drop low and creep
+    // only pounce once he's actually within striking distance (so he lands near them, not on empty space)
+    if((this.stateT>0.5 && dToFlock<this.pounceRange) || this.stateT>9){ this.state='pounce'; this.stateT=0; this.lunge=0; this.hop=0; this.pounceRange=rand(74,104); }
   } else if(this.state==='pounce'){ this.aim(true,{water:true,stopAt:16}); maxSpeed=170; crouchTarget=0.15;
     this.lunge=Math.min(1,this.stateT*6); this.hop=Math.sin(clamp(this.stateT/0.5,0,1)*Math.PI)*6;
     if(!this.pounced){ var fcp=flockCentroid(); if(Math.hypot(fcp.x-this.x,fcp.y-this.y)<58){ spookFlock(this); this.pounced=true; } } // they scatter as he commits to the pounce
