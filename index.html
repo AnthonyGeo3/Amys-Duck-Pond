@@ -16,7 +16,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  *{margin:0;padding:0;box-sizing:border-box;}
+  *{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    -webkit-tap-highlight-color: transparent; /* Fixes the blue flashing on tap */
+  }
   html,body{height:100%;overflow:hidden;background:#bfe0dc;}
   body{
     font-family:'Quicksand',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
@@ -88,6 +93,10 @@ var ducksInit=false,running=true,last=0,hinted=false;
 
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
 var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0};
+
+// Static star map generated once
+var stars=[]; 
+for(var i=0;i<80;i++) stars.push({x:Math.random(), y:Math.random(), s:Math.random()});
 
 // -- WEATHER STATE --
 var weather={loaded:false, isDay:1, rain:false};
@@ -197,7 +206,7 @@ Duck.prototype.update=function(dt){
   this.leanCur+=(leanTarget-this.leanCur)*Math.min(1,dt*6);
   this.bobCur=Math.sin(this.bobPhase)*(this.swimming?2.0:(0.8+this.legAmt*1.4));
 
-  // celebration drivers (happy patter after feeding)
+  // celebration drivers
   if(this.state==='happy'){
     this.happyT+=dt;
     if(this.swimming){
@@ -287,16 +296,13 @@ Duck.prototype.draw=function(g){
 
   function drawBody(){
     var topY=bodyCenterY-bodyRy+3, botY=bodyCenterY+bodyRy, wMax=bodyRx, topHalf=3.6;
-    // tail (perky, points up & back)
     g.fillStyle=p.wing;
     var txb=-wMax*0.5, tyb=botY-3;
     g.beginPath(); g.moveTo(txb,tyb);
     g.quadraticCurveTo(txb-6,tyb-4,txb-7.5,tyb-10.5);
     g.quadraticCurveTo(txb-1.5,tyb-7,txb+3,tyb-3.5); g.closePath(); g.fill();
-    // neck ribbon first, so the body overlaps its base into one continuous bottle line
     var nbx=1.2, nby=topY+4, ncx=lerp(nbx,hx,0.5)+1.6, ncy=lerp(nby,hy,0.5);
     g.fillStyle=p.body; ribbon(nbx,nby,ncx,ncy,hx,hy+headR*0.5,headR*1.45,headR*0.92); g.fill();
-    // body: upright teardrop / bowling-pin (narrow shoulders, full lower belly)
     g.fillStyle=p.body;
     g.beginPath();
     g.moveTo(-topHalf,topY);
@@ -307,32 +313,25 @@ Duck.prototype.draw=function(g){
     g.quadraticCurveTo(0,topY-2.6,-topHalf,topY);
     g.closePath(); g.fill();
     g.strokeStyle='rgba(70,55,40,0.10)'; g.lineWidth=1; g.stroke();
-    // lighter chest down the front
     g.fillStyle=p.belly; g.beginPath(); g.ellipse(wMax*0.34,bodyCenterY+5,wMax*0.62,bodyRy*0.66,0.05,0,Math.PI*2); g.fill();
-    // neck ring (only some ducks)
     if(p.neckRing){
       var rt=0.58, rx=nbx+(hx-nbx)*rt, ry=nby+(hy-nby)*rt, ang=Math.atan2(hy-nby,hx-nbx);
       g.save(); g.translate(rx,ry); g.rotate(ang); g.fillStyle=p.neckRing;
       g.beginPath(); g.ellipse(0,0,headR*0.5,headR*0.85,0,0,Math.PI*2); g.fill(); g.restore();
     }
-    // wing (lifts & flaps during celebration)
     g.save(); g.translate(-1.2,bodyCenterY+4); g.rotate(-0.16-self.wingFlap*0.7); g.translate(0,-Math.abs(self.wingFlap)*1.5);
     g.fillStyle=p.wing; g.beginPath(); g.ellipse(0,0,wMax*0.7,bodyRy*0.5,0,0,Math.PI*2); g.fill();
     g.strokeStyle='rgba(0,0,0,0.06)'; g.lineWidth=0.8;
     for(var i=-1;i<=1;i++){ g.beginPath(); g.moveTo(-3,i*3+2); g.lineTo(5,i*3+5); g.stroke(); }
     g.restore();
-    // head
     g.fillStyle=p.head; g.beginPath(); g.ellipse(hx,hy,headR,headR*0.97,0,0,Math.PI*2); g.fill();
-    // blush
     g.fillStyle=p.blush; g.beginPath(); g.ellipse(hx+headR*0.4,hy+headR*0.3,2.1,1.4,0,0,Math.PI*2); g.fill();
-    // beak (broad runner bill, set high on the face with a slight upward tilt)
     var bkx=hx+headR*0.62, bky=hy-0.6;
     g.fillStyle=p.beak; g.beginPath();
     g.moveTo(bkx-1.2,bky-2.9); g.quadraticCurveTo(bkx+8.4,bky-3.1,bkx+10.0,bky-0.6);
     g.quadraticCurveTo(bkx+9.0,bky+2.6,bkx-1.2,bky+3.0); g.quadraticCurveTo(bkx+1.4,bky,bkx-1.2,bky-2.9); g.closePath(); g.fill();
     g.strokeStyle=p.beakDark; g.lineWidth=0.8; g.beginPath(); g.moveTo(bkx-0.6,bky+0.2); g.quadraticCurveTo(bkx+6,bky-0.1,bkx+9.0,bky-0.5); g.stroke();
     g.fillStyle=p.beakDark; g.beginPath(); g.ellipse(bkx+2.4,bky-1.4,0.6,0.5,0,0,Math.PI*2); g.fill();
-    // eye (set high on the head)
     var ex=hx+headR*0.28, ey=hy-headR*0.24;
     if(self.blink>0){
       g.strokeStyle=p.eye; g.lineWidth=1.1; g.lineCap='round';
@@ -398,42 +397,34 @@ function buildScene(){
   else { for(var k=0;k<state.ducks.length;k++){ var d=state.ducks[k]; d.x=clamp(d.x,26,W-26); d.y=clamp(d.y,groundTop+26,H-26); } }
 }
 function renderStatic(g){
-  // sky
   var sky=g.createLinearGradient(0,0,0,groundTop);
   sky.addColorStop(0,'#cfeae6'); sky.addColorStop(1,'#ecf5ed');
   g.fillStyle=sky; g.fillRect(0,0,W,groundTop);
-  // soft sun glow
   var sun=g.createRadialGradient(W*0.7,groundTop*0.4,2,W*0.7,groundTop*0.4,groundTop*1.6);
   sun.addColorStop(0,'rgba(255,250,230,0.5)'); sun.addColorStop(1,'rgba(255,250,230,0)');
   g.fillStyle=sun; g.fillRect(0,0,W,groundTop+30);
-  // distant treeline
   g.fillStyle='#cfe2bf'; g.beginPath(); g.moveTo(0,groundTop);
   g.quadraticCurveTo(W*0.2,groundTop-16,W*0.45,groundTop-5);
   g.quadraticCurveTo(W*0.7,groundTop+5,W,groundTop-12); g.lineTo(W,groundTop); g.closePath(); g.fill();
-  // grass base
   var grass=g.createLinearGradient(0,groundTop,0,H);
   grass.addColorStop(0,'#a9d089'); grass.addColorStop(1,'#7cb564');
   g.fillStyle=grass; g.fillRect(0,groundTop,W,H-groundTop);
-  // water
   var wp=new Path2D(); wp.moveTo(0,groundTop);
   for(var i=0;i<shorePts.length;i++) wp.lineTo(shorePts[i].x,shorePts[i].y);
   wp.lineTo(0,H); wp.closePath();
   var water=g.createLinearGradient(0,groundTop,0,H);
   water.addColorStop(0,'#5ba0a8'); water.addColorStop(1,'#8ac6c6');
   g.fillStyle=water; g.fill(wp);
-  // deeper shade near top of water
   g.save(); g.clip(wp);
   var wd=g.createLinearGradient(0,groundTop,0,groundTop+(H-groundTop)*0.5);
   wd.addColorStop(0,'rgba(40,90,100,0.25)'); wd.addColorStop(1,'rgba(40,90,100,0)');
   g.fillStyle=wd; g.fillRect(0,groundTop,W,H);
   g.restore();
-  // sandy shore
   g.lineJoin='round'; g.lineCap='round';
   g.beginPath(); g.moveTo(shorePts[0].x,shorePts[0].y);
   for(var j=0;j<shorePts.length;j++) g.lineTo(shorePts[j].x,shorePts[j].y);
   g.lineWidth=13; g.strokeStyle='rgba(233,217,178,0.92)'; g.stroke();
   g.lineWidth=4; g.strokeStyle='rgba(245,233,202,0.95)'; g.stroke();
-  // textures + scatter
   drawGrassTexture(g); drawFlowers(g); drawPebbles(g);
 }
 function drawGrassTexture(g){
@@ -597,9 +588,8 @@ function update(dt){
   for(var i=0;i<state.ducks.length;i++) state.ducks[i].update(dt);
   updatePellets(dt); updateParticles(dt); updateRipples(dt); updateClouds(dt);
 
-  // Raindrop ripples on the water
   if (weather.loaded && weather.rain) {
-    if (Math.random() < dt * 15) { // Roughly 15 little splashes a second
+    if (Math.random() < dt * 15) { 
       var rx = rand(0, W);
       var ry = rand(groundTop, H);
       if (isWater(rx, ry)) {
@@ -740,16 +730,31 @@ function drawParticles(g){
   }
   g.globalAlpha=1;
 }
-function drawWeatherOverlay(g){
-  if(!weather.loaded) return;
-  
-  // Night overlay
-  if(weather.isDay === 0){
-    g.fillStyle = 'rgba(10, 20, 45, 0.4)';
-    g.fillRect(0,0,W,H);
+
+// ----- Weather specific drawing logic -----
+function drawStarsAndMoon(g){
+  // Twinkling Stars
+  g.fillStyle = 'rgba(255, 255, 255, 0.9)';
+  for(var i=0; i<stars.length; i++){
+    var sx = stars[i].x * W;
+    var sy = stars[i].y * (groundTop - 5); // Keep them above the water line
+    var r = 0.6 + stars[i].s * 1.2;
+    g.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(state.time * 1.5 + i));
+    g.beginPath(); g.arc(sx, sy, r, 0, Math.PI*2); g.fill();
   }
-  
-  // Rain streaks
+  g.globalAlpha = 1.0;
+
+  // The Moon (Top Right)
+  var moonX = W * 0.8;
+  var moonY = groundTop * 0.4;
+  g.fillStyle = '#fffdf0';
+  g.beginPath(); g.arc(moonX, moonY, 16, 0, Math.PI*2); g.fill();
+  g.fillStyle = 'rgba(255, 255, 255, 0.08)';
+  g.beginPath(); g.arc(moonX, moonY, 26, 0, Math.PI*2); g.fill();
+  g.beginPath(); g.arc(moonX, moonY, 40, 0, Math.PI*2); g.fill();
+}
+
+function drawRain(g){
   if(weather.rain){
     g.strokeStyle = 'rgba(255, 255, 255, 0.25)';
     g.lineWidth = 1;
@@ -761,17 +766,36 @@ function drawWeatherOverlay(g){
     g.stroke();
   }
 }
+
 function drawVignette(g){ g.fillStyle=vignetteGrad; g.fillRect(0,0,W,H); }
 
 function render(){
   ctx.clearRect(0,0,W,H);
-  ctx.drawImage(bg,0,0,W,H);
+  ctx.drawImage(bg,0,0,W,H); // Base pre-rendered scene
+
+  // 1. Draw a very dark wash over the bright background if it is night
+  if (weather.loaded && weather.isDay === 0) {
+     ctx.fillStyle = 'rgba(4, 10, 24, 0.78)';
+     ctx.fillRect(0,0,W,H);
+     drawStarsAndMoon(ctx); // Draw celestial bodies behind the ducks
+  }
+
+  // 2. Draw standard scene elements
   drawClouds(ctx);
   drawShimmer(ctx);
   drawRipples(ctx);
-  drawScene(ctx);
+  drawScene(ctx); // This renders the ducks and the food
   drawParticles(ctx);
-  drawWeatherOverlay(ctx); // Added weather visual effects
+
+  // 3. Draw a final lighter wash and weather effects so the ducks blend into the night
+  if (weather.loaded) {
+     if (weather.isDay === 0) {
+        ctx.fillStyle = 'rgba(4, 10, 24, 0.35)'; // Gentle tint to darken the ducks
+        ctx.fillRect(0,0,W,H);
+     }
+     drawRain(ctx);
+  }
+  
   drawVignette(ctx);
 }
 
@@ -790,20 +814,16 @@ var audio=(function(){
   function startAmbient(){
     if(!actx||started) return; started=true;
     try{
-      // white-noise bed (looped), shaped into a gentle breeze through leaves
       var len=Math.floor(3*actx.sampleRate), buf=actx.createBuffer(1,len,actx.sampleRate), d=buf.getChannelData(0), i;
       for(i=0;i<len;i++) d[i]=Math.random()*2-1;
       var wind=actx.createBufferSource(); wind.buffer=buf; wind.loop=true;
       var wbp=actx.createBiquadFilter(); wbp.type='bandpass'; wbp.frequency.value=700; wbp.Q.value=0.6;
       var windGain=actx.createGain(); windGain.gain.value=0.03;
       wind.connect(wbp); wbp.connect(windGain); windGain.connect(master); wind.start();
-      // slow gusts (amplitude swells) so it breathes instead of droning
       var gust=actx.createOscillator(); gust.type='sine'; gust.frequency.value=0.06;
       var gustG=actx.createGain(); gustG.gain.value=0.035; gust.connect(gustG); gustG.connect(windGain.gain); gust.start();
-      // drifting band centre for an organic, never-quite-repeating timbre
       var sweep=actx.createOscillator(); sweep.type='sine'; sweep.frequency.value=0.033;
       var sweepG=actx.createGain(); sweepG.gain.value=350; sweep.connect(sweepG); sweepG.connect(wbp.frequency); sweep.start();
-      // very soft airy shimmer to hint at the water surface
       var shim=actx.createBufferSource(); shim.buffer=buf; shim.loop=true;
       var shp=actx.createBiquadFilter(); shp.type='highpass'; shp.frequency.value=3200;
       var slp=actx.createBiquadFilter(); slp.type='lowpass'; slp.frequency.value=7500;
@@ -834,15 +854,15 @@ var audio=(function(){
     try{
       var t=actx.currentTime+0.03, pan=(Math.random()*2-1)*0.6;
       var base=1950+Math.random()*1300, peak=0.04+Math.random()*0.02, type=Math.floor(Math.random()*4), k;
-      if(type===0){            // single sweet rising tweet
+      if(type===0){ 
         birdNote(t, base*0.8, base*1.25, 0.18+Math.random()*0.08, peak, pan);
-      } else if(type===1){     // two-note "tu-wee"
+      } else if(type===1){ 
         birdNote(t, base*0.9, base, 0.12, peak, pan);
         birdNote(t+0.17, base*1.16, base*1.34, 0.16, peak, pan);
-      } else if(type===2){     // quick little trill
+      } else if(type===2){
         var n=4+Math.floor(Math.random()*3), gap=0.075+Math.random()*0.03;
         for(k=0;k<n;k++) birdNote(t+k*gap, base*1.05, base*1.18, 0.06, peak*0.9, pan);
-      } else {                 // descending cheeps
+      } else { 
         for(k=0;k<3;k++) birdNote(t+k*0.16, base*(1.12-k*0.12), base*(1.02-k*0.12), 0.12, peak, pan);
       }
     }catch(e){}
@@ -901,7 +921,6 @@ var audio=(function(){
     try{
       if(on){
         if(actx.state==='suspended') actx.resume();
-        // iOS: a 1-sample silent buffer played inside the tap reliably unlocks the audio engine
         try{ var ub=actx.createBuffer(1,1,22050), us=actx.createBufferSource(); us.buffer=ub; us.connect(actx.destination); us.start(0); }catch(e){}
         try{ if(navigator.audioSession) navigator.audioSession.type='playback'; }catch(e){}
         startAmbient();
@@ -977,7 +996,7 @@ document.addEventListener('visibilitychange',function(){
 
 resize();
 updateSndIcon();
-syncWeather(); // Fetch the real world weather!
+syncWeather();
 last=performance.now();
 requestAnimationFrame(frame);
 requestAnimationFrame(function(){ canvas.classList.add('show'); });
