@@ -209,7 +209,10 @@ var FIREBASE_CONFIG={
   appId:"1:532496506242:web:c0ecf84d1a6adc7e03839b"
 };
 var POND_PATH='ponds/shared';
-var VISITOR_COST=1500;          // one-time unlock per visitor type
+var VISITOR_COST=1500;          // base price of the 1st visitor; +500 for each one already owned
+function ownedCount(u){ var n=0; u=u||{}; for(var k in u){ if(u[k]) n++; } return n; }
+function visitorCostFor(u){ return VISITOR_COST + 500*ownedCount(u); }   // 1st 1500, 2nd 2000, 3rd 2500...
+function visitorCost(){ return visitorCostFor(state.unlocked); }
 function duckCost(){ return 500*state.duckCount; }   // 1st extra duck 500, then +500 each
 var _pondRef=null, _pendingEarn=0, _remoteReady=false;
 function addCurrency(n){ state.currency+=n; if(_pondRef) _pendingEarn+=n; }   // accrue locally; commit the delta on save
@@ -262,11 +265,11 @@ var store={
     return true;
   },
   buyVisitor:function(id){
-    if((state.unlocked&&state.unlocked[id]) || Math.floor(state.currency)<VISITOR_COST) return false;
+    if((state.unlocked&&state.unlocked[id]) || Math.floor(state.currency)<visitorCost()) return false;
     if(_pondRef && _remoteReady){
-      _pondRef.transaction(function(p){ p=p||_localPond(); p.unlocked=p.unlocked||{};
-        if((p.currency||0)>=VISITOR_COST && !p.unlocked[id]){ p.currency-=VISITOR_COST; p.unlocked[id]=1; } return p; });
-    } else { state.currency-=VISITOR_COST; state.unlocked=state.unlocked||{}; state.unlocked[id]=1; this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
+      _pondRef.transaction(function(p){ p=p||_localPond(); p.unlocked=p.unlocked||{}; var c=visitorCostFor(p.unlocked);   // atomic: price off the shared owned-count
+        if((p.currency||0)>=c && !p.unlocked[id]){ p.currency-=c; p.unlocked[id]=1; } return p; });
+    } else { state.currency-=visitorCost(); state.unlocked=state.unlocked||{}; state.unlocked[id]=1; this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
     var v=visitorById(id); if(v) summonVisitor(v.make);   // show off the new guest right away
     return true;
   }
@@ -2163,11 +2166,12 @@ function buildShop(){
   }
   // visitors
   var hd=document.createElement('div'); hd.className='shopHd'; hd.textContent='Visitors'; shopList.appendChild(hd);
+  var vc=visitorCost();   // same price for every unowned visitor; it climbs as you collect them
   for(var i=0;i<VISITORS.length;i++){ (function(v){
     var owned=!!(state.unlocked&&state.unlocked[v.id]);
     shopRow(v.name, owned?'Owned — drops by now and then':null,
-      owned?'Owned':('Buy  ·  '+VISITOR_COST.toLocaleString()),
-      !owned && bal>=VISITOR_COST,
+      owned?'Owned':('Buy  ·  '+vc.toLocaleString()),
+      !owned && bal>=vc,
       function(){ store.buyVisitor(v.id); hideHint(); closeShop(); });
   })(VISITORS[i]); }
 }
