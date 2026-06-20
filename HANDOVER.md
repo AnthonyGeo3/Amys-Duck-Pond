@@ -101,6 +101,7 @@ All in `index.html`.
 ## Known gotchas
 
 - **iOS silent switch**: iOS mutes Web Audio when the physical ring/silent switch is on, regardless of volume. Mitigated in code by requesting the `'playback'` audio session (`navigator.audioSession.type`) and playing a silent unlock buffer inside the tap that enables sound. Net effect: once a user taps the speaker icon, sound plays even if the phone is set to silent.
+- **Audio pauses on lock/background**: the `'playback'` session above also makes iOS keep audio running when the screen locks, which we don't want. Fixed with `audio.setActive(false/true)` — it suspends the `AudioContext` (and clears the bird timer) on `visibilitychange`→hidden / `pagehide` / `blur`, and resumes on return. The on/off state (`enabled`) is untouched, so the speaker icon stays "on" and sound comes back when the app is reopened. (Best confirmed on a real iPhone; on desktop it triggers on tab-switch.)
 - **Caching**: see the update workflow above — one refresh after deploy; bump cache name to force-reset.
 - **Service worker scope**: `sw.js` must stay at the repo root (its scope is its own directory).
 - **Audio needs a user gesture**: the AudioContext is created/resumed on the first tap of the speaker button (browser requirement). Don't try to start sound on page load.

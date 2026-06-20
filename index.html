@@ -1564,6 +1564,24 @@ var audio=(function(){
       o.connect(g); g.connect(master); o.start(t); o.stop(t+0.32);
     }catch(e){}
   }
+  // Pause/resume output when the app is backgrounded or the screen locks, without flipping the on/off state.
+  function setActive(on){
+    if(!actx||!enabled) return;
+    try{
+      if(on){
+        if(actx.state==='suspended' && actx.resume) actx.resume();
+        master.gain.cancelScheduledValues(actx.currentTime);
+        master.gain.setValueAtTime(master.gain.value,actx.currentTime);
+        master.gain.linearRampToValueAtTime(0.5,actx.currentTime+0.4);
+        scheduleBird();
+      } else {
+        if(chirpTimer){ clearTimeout(chirpTimer); chirpTimer=null; }
+        master.gain.cancelScheduledValues(actx.currentTime);
+        master.gain.setValueAtTime(0.0,actx.currentTime); // cut now — on a lock the page freezes before a fade could finish
+        if(actx.suspend) actx.suspend();
+      }
+    }catch(e){}
+  }
   function setEnabled(on){
     ensure(); if(!actx) return false;
     enabled=on;
@@ -1584,7 +1602,7 @@ var audio=(function(){
     }catch(e){}
     return true;
   }
-  return { toggle:function(){ return setEnabled(!enabled); }, isOn:function(){ return enabled; }, plip:plip, nom:nom, happy:happy, meow:meow, bloop:bloop };
+  return { toggle:function(){ return setEnabled(!enabled); }, isOn:function(){ return enabled; }, setActive:setActive, plip:plip, nom:nom, happy:happy, meow:meow, bloop:bloop };
 })();
 
 // ---------- ui ----------
@@ -1659,9 +1677,13 @@ function resize(){
 window.addEventListener('resize',resize);
 window.addEventListener('orientationchange',function(){ setTimeout(resize,200); });
 document.addEventListener('visibilitychange',function(){
-  if(document.hidden){ running=false; }
-  else if(!running){ running=true; last=performance.now(); requestAnimationFrame(frame); }
+  if(document.hidden){ running=false; audio.setActive(false); }
+  else { audio.setActive(true); if(!running){ running=true; last=performance.now(); requestAnimationFrame(frame); } }
 });
+// Extra safety nets for iOS screen-lock / app-switch (pagehide fires when Safari freezes the page).
+window.addEventListener('pagehide',function(){ audio.setActive(false); });
+window.addEventListener('pageshow',function(){ if(!document.hidden) audio.setActive(true); });
+window.addEventListener('blur',function(){ if(document.hidden) audio.setActive(false); });
 
 resize();
 updateSndIcon();
