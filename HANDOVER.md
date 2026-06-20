@@ -11,11 +11,11 @@ This document is a handover so the project can be continued in a fresh session (
 - Fully working and deployed to GitHub Pages.
 - Installable as a PWA on Android and iPhone, works offline.
 - Audio redesigned to a peaceful nature bed (breeze + birdsong) and tuned to taste.
-- Duck count currently 8.
+- **A pond now starts with 1 duck and no visitors unlocked** — everything else is bought in the shop. Duck count and unlocked visitors are part of the shared (synced) pond record.
 - **Live weather + day/night sync** for Wrexham, UK via the Open-Meteo API: real nighttime (deep-blue wash, twinkling stars, glowing moon, dimmed ducks) and rain effects (falling streaks + water-only splash ripples) that mirror the actual local conditions.
 - Tighter pellet swarming: up to 4 ducks can chase one pellet, and ducks now re-target every frame instead of locking on.
 - **Sleepy idle state**: after a randomised 1-2 minutes without feeding, the flock gathers into a huddle, tucks their bills down, closes their eyes and falls asleep with little floating "z" bubbles — a gentle cue to put the phone down. Dropping a pellet wakes them with a quick wing-stretch, then they run for the food.
-- **"Call a visitor" shop**: a paw-print button (under the sound button) opens a small popup that lists every registered visitor with a "Call" button to summon it to the pond instantly. Currently a free testing/preview tool; it's the seed of the planned currency shop. The list is built automatically from the `VISITORS` registry, so new animals appear with no extra UI work.
+- **Pond shop**: a lemonade-stand button (under the sound button) opens the shop. Buy a **duck** (costs `500 × current count` — 1st extra 500, then +500 each, capped at 100) or unlock a **visitor** type (1,500 Quacks each; once owned it starts dropping by at random). Buying a visitor also summons it immediately so you see your purchase arrive. Everything is paid for in Quacks and shared between both phones (a purchase deducts and appears for both). The visitor rows build automatically from the `VISITORS` registry.
 - **Currency ("Quacks")**: a counter (gold-coin pill, top-left under the title) that earns +1 per pellet a duck actually *eats* and +100 per minute the app is open. **Shared between both phones via Firebase Realtime Database** (one `ponds/shared` record; earn/spend are atomic transactions so the two clients can't clobber each other), with `localStorage` as an instant + offline fallback. The display name is the one-line `CURRENCY` constant.
 - **Random visitors**: every 3-5 minutes (randomised, one at a time) a cute guest wanders in. Built on an extensible visitor framework so more animals can be added. So far:
 
@@ -70,7 +70,7 @@ Key technique: the duck body is drawn as an upright "bowling-pin" teardrop with 
 
 All in `index.html`.
 
-- **Number of ducks** — `var DUCK_COUNT = 8;` just above `initDucks()`. Change to any number; positions auto-scatter and colours cycle through `PALS`.
+- **Ducks** — count is now driven by the shop (`state.duckCount`, default 1) and the shared record, not a constant. `setDuckCount(n)` adds/removes to match; the cap is `DUCK_LIMIT=100`. Prices: `duckCost()` (`500*count`) and `VISITOR_COST` (1500). To gift yourself currency for testing, set `state.currency` in the console or temporarily bump it.
 - **Duck colours** — the `PALS` array. Add a 5th palette object to get a new colour into the rotation.
 - **Duck speeds** — `RUN` and `WALK` near the top.
 - **Food sharing** (how many ducks chase one pellet) — in `assignFood()`. The score uses `pe.claims * (0.1 * minS)` and a pellet is "full" at `claims >= 4`. Lower the multiplier / raise the cap = more ducks per pellet (tighter swarming); higher multiplier / lower cap = calmer, more spread out. (Tuned up from the original `0.6` penalty / cap of `2` to encourage group swarming.) Note the target lock-in was removed, so ducks re-pick a pellet each frame — no extra knob needed.
@@ -100,7 +100,7 @@ All in `index.html`.
 - **Saving / sharing (Firebase)** — the `store` object owns all persistence. `store.load()` reads `localStorage` first (instant + offline), then `store._connect()` brings up Firebase: `firebase.initializeApp(FIREBASE_CONFIG)` → `signInAnonymously()` (the DB rules require `auth != null`) → subscribes to `ponds/shared/currency` with `ref.on('value')`. Earnings are accrued locally into `_pendingEarn` and committed on each autosave (`store.save`, every ~5s + on hide/pagehide) as an **atomic `ref.transaction(c => c + delta)`**, so two phones earning at once both count (no clobber). The `on('value')` callback makes the shared total the source of truth (`state.currency = remote + _pendingEarn`). `store.spend(n)` (for the future shop) is an atomic `c => max(0, c - n)`. The Firebase **compat** SDK is loaded as three `<script>` tags in `<head>` (so the global `firebase` is ready before the IIFE); if they fail to load (offline) the app falls back to per-device `localStorage`.
   - Firebase setup that lives outside the code: Realtime Database enabled, **Anonymous** sign-in enabled, and rules locking `ponds/shared` to `auth != null`. Config is in `FIREBASE_CONFIG` (public client config — safe in the client).
   - Known minor caveat: earnings accrued while fully offline live only in `localStorage` and are replaced by the shared total on reconnect (not folded in). Fine for normal online use; revisit if it matters.
-  - When the shop arrives, extend the shared record (e.g. `ponds/shared/ducks`, `/unlockedVisitors`) the same way: write via transactions, mirror into `state`, and render from it.
+- **Shop / shared world** — the shared record is now the whole `ponds/shared` object: `{ currency, ducks, unlocked:{id:1} }`. `store.load`→`_connect` subscribes to the whole node; `applyPond(p)` mirrors it into `state.currency` (+`_pendingEarn`), `setDuckCount(p.ducks)` (grows/shrinks the on-screen flock, leaving existing ducks be), and `state.unlocked`, then calls `refreshShopUI()`. Purchases are atomic transactions on the whole node that re-check affordability against the *shared* balance, so two phones buying at once can't overspend: `store.buyDuck()` (cost `500*ducks`, cap `DUCK_LIMIT`=100) and `store.buyVisitor(id)` (`VISITOR_COST`=1500, sets `unlocked[id]`). Earnings still commit via `store.save` (transaction `currency += pendingEarn`). Offline, all of these fall back to mutating `state` + `localStorage`. The random visitor scheduler only spawns from `unlockedVisitors()`; `buyVisitor` also summons the new guest once. `setDuckCount`/`applyPond` run on every remote update, so a purchase on one phone appears on the other.
 
 ---
 
@@ -134,13 +134,13 @@ All in `index.html`.
 ## Ideas / possible next steps (none started)
 
 - **iOS "Add to Home Screen" hint** — a small banner that appears only in iOS Safari when not yet installed, since iPhone users get no automatic install prompt.
-- **Scale duck size down as `DUCK_COUNT` rises**, so a big flock doesn't feel crowded.
+- **Scale duck size down as the flock grows**, so a big flock doesn't feel crowded.
 - **Remember the sound on/off preference** between visits with `localStorage` (works on the real GitHub Pages site).
 - **Periodic weather refresh** — wrap `syncWeather()` in a `setInterval` so a long-open session follows dusk/rain in real time.
 - **Night-time audio** — crickets/owl bed when `weather.isDay === 0`, to match the visual night mode.
 - **Sleep polish** — a soft sit-down pose or quieter audio bed while the flock is asleep (`state.sleeping`); maybe one duck stays "on watch".
 - **More visitors** (the framework is built and ready — each is a new class added to `VISITORS`; cat, koi, red panda, stork, dragonflies, frogs done): e.g. a strolling tortoise that climbs out then back in.
-- **The game layer** (down the line): strip back to land + one duck, earn currency per minute on-app and per pellet, and a shop where each purchase (water/swimming, +1 duck, a visitor) costs more than the last. The world knobs this needs already exist — water is the `shoreX`/`isWater` system, ducks are `DUCK_COUNT`, visitors are the `VISITORS` registry — so it's mostly gating these behind saved flags + `localStorage` and adding a shop UI.
+- **Shop extras** (the economy core is in): a "water / swimming" upgrade could be the next shop item (start ponds with no/less water and sell it) — water is the `shoreX`/`isWater` system, so it'd gate behind a shared flag like ducks/visitors do. Other ideas: cosmetic upgrades, a "name your pond", or balancing the prices/earn rates.
 - **More weather states** — snow, fog, or wind-driven ripples driven off the same `weather_code`.
 - **A gentle running-water trickle** layer near the shore.
 - **Ducklings** following a parent, or more colour variety.

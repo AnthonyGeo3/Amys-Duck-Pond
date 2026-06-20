@@ -97,11 +97,16 @@
     border-radius:14px;padding:9px 10px 9px 14px;
   }
   .shopItem .nm{color:#2c5450;font-weight:600;font-size:15px;}
+  .shopItem .sub2{color:rgba(44,84,80,.55);font-size:11px;font-weight:500;margin-top:1px;}
   .shopItem button{
-    border:none;border-radius:999px;padding:8px 16px;font-family:inherit;font-weight:700;font-size:13px;
+    border:none;border-radius:999px;padding:8px 14px;font-family:inherit;font-weight:700;font-size:13px;white-space:nowrap;
     background:#5ba0a8;color:#fff;cursor:pointer;transition:transform .12s ease,background .2s ease;
   }
   .shopItem button:active{transform:scale(.94);background:#4d8c93;}
+  .shopItem button:disabled{background:rgba(120,140,140,.28);color:rgba(44,84,80,.5);cursor:default;}
+  .shopBal{display:flex;align-items:center;justify-content:center;gap:6px;color:#2c5450;font-weight:700;font-size:15px;margin-bottom:12px;}
+  .shopBal .ic{width:16px;height:16px;border-radius:50%;background:radial-gradient(circle at 35% 32%, #ffe79a, #f3c33e 62%, #d9962a 100%);box-shadow:inset 0 0 0 1.3px rgba(180,130,30,.45);}
+  .shopHd{color:rgba(44,84,80,.6);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;text-align:left;margin:6px 2px 1px;}
   #shopClose{
     margin-top:13px;border:none;background:none;color:rgba(44,84,80,.6);
     font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;padding:6px;
@@ -129,13 +134,24 @@
     <div id="title">little duck pond</div>
     <div id="coin"><span class="ic"></span><span id="coinVal">0</span><span class="lbl">Quacks</span></div>
     <button id="snd" aria-label="Enable gentle sounds"></button>
-    <button id="shop" aria-label="Call a visitor">
-      <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="10.5" r="2"/><circle cx="10.3" cy="6.8" r="2"/><circle cx="13.7" cy="6.8" r="2"/><circle cx="18" cy="10.5" r="2"/><path d="M12 11.2c-2.7 0-4.9 1.9-4.9 4 0 1.6 1.3 2.6 2.8 2.6.8 0 1.4-.3 2.1-.3s1.3.3 2.1.3c1.5 0 2.8-1 2.8-2.6 0-2.1-2.2-4-4.9-4z"/></svg>
+    <button id="shop" aria-label="Open the shop">
+      <svg viewBox="0 0 24 24">
+        <rect x="4.6" y="6.6" width="1.5" height="9.4" fill="#a9743f"/>
+        <rect x="17.9" y="6.6" width="1.5" height="9.4" fill="#a9743f"/>
+        <rect x="3.4" y="15.3" width="17.2" height="4.7" rx="0.7" fill="#ecd29a"/>
+        <rect x="3.4" y="15.3" width="17.2" height="1.5" rx="0.7" fill="#d3b27a"/>
+        <circle cx="12" cy="12.5" r="2.5" fill="#f7d83a" stroke="#e0b81f" stroke-width="0.5"/>
+        <rect x="2.4" y="3.4" width="19.2" height="3.3" fill="#e2674a"/>
+        <rect x="6" y="3.4" width="3" height="3.3" fill="#fbf1dd"/>
+        <rect x="12" y="3.4" width="3" height="3.3" fill="#fbf1dd"/>
+        <rect x="18" y="3.4" width="3" height="3.3" fill="#fbf1dd"/>
+        <path d="M2.4 6.7l1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7" fill="#e2674a"/>
+      </svg>
     </button>
     <div id="shopModal">
       <div id="shopCard">
-        <h2>Call a visitor</h2>
-        <p class="sub">Summon a guest to the pond right now</p>
+        <h2>Pond shop</h2>
+        <p class="sub">Spend your Quacks</p>
         <div id="shopList"></div>
         <button id="shopClose">Close</button>
       </div>
@@ -170,7 +186,7 @@ var ducksInit=false,running=true,last=0,hinted=false;
 var shoreSeed={base:0,amp:0,freq:2,phase:Math.random()*6.283,slope:0};
 var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds:[],time:0,lastFeed:0,sleeping:false,roost:null,
   visitor:null,nextVisitor:0,alarm:null,huddle:null,scare:0,sleepDelay:90,chased:null,friend:null,dfChaser:null,dfTarget:null,frogChaser:null,frogTarget:null,
-  currency:0};
+  currency:0,duckCount:1,unlocked:{}};
 
 // ---------- currency ("Quacks") ----------
 var CURRENCY='Quacks';          // rename here to taste
@@ -191,34 +207,62 @@ var FIREBASE_CONFIG={
   appId:"1:532496506242:web:c0ecf84d1a6adc7e03839b"
 };
 var POND_PATH='ponds/shared';
-var _fbRef=null, _pendingEarn=0, _remoteReady=false;
-function addCurrency(n){ state.currency+=n; if(_fbRef) _pendingEarn+=n; }   // accrue locally; commit the delta on save
+var VISITOR_COST=1500;          // one-time unlock per visitor type
+function duckCost(){ return 500*state.duckCount; }   // 1st extra duck 500, then +500 each
+var _pondRef=null, _pendingEarn=0, _remoteReady=false;
+function addCurrency(n){ state.currency+=n; if(_pondRef) _pendingEarn+=n; }   // accrue locally; commit the delta on save
+function applyPond(p){           // mirror the shared record into local state + the world
+  p=p||{};
+  state.currency=(typeof p.currency==='number'?p.currency:0)+_pendingEarn;
+  setDuckCount(typeof p.ducks==='number'?p.ducks:1);
+  state.unlocked=p.unlocked||{};
+  if(typeof refreshShopUI==='function') refreshShopUI();
+}
+function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{} }; }
 var store={
   load:function(){
-    try{ var s=JSON.parse(localStorage.getItem(SAVE_KEY)||'{}'); if(typeof s.currency==='number') state.currency=s.currency; if(typeof s.pendingEarn==='number') _pendingEarn=s.pendingEarn; }catch(e){}
+    try{ var s=JSON.parse(localStorage.getItem(SAVE_KEY)||'{}');
+      if(typeof s.pendingEarn==='number') _pendingEarn=s.pendingEarn;
+      if(typeof s.currency==='number') state.currency=s.currency;
+      if(typeof s.ducks==='number') setDuckCount(s.ducks);
+      if(s.unlocked) state.unlocked=s.unlocked;
+    }catch(e){}
     this._connect();
   },
   _connect:function(){
-    if(_fbRef || !window.firebase || !FIREBASE_CONFIG.databaseURL) return;   // offline / SDK missing => stay on localStorage
+    if(_pondRef || !window.firebase || !FIREBASE_CONFIG.databaseURL) return;   // offline / SDK missing => stay on localStorage
     try{
       if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
       firebase.auth().signInAnonymously().then(function(){
-        var ref=firebase.database().ref(POND_PATH+'/currency'); _fbRef=ref;
+        var ref=firebase.database().ref(POND_PATH); _pondRef=ref;
         ref.on('value', function(snap){
-          var v=snap.val();
-          if(typeof v==='number'){ _remoteReady=true; state.currency=v+_pendingEarn; }   // shared total is the truth
-          else { ref.transaction(function(c){ return c==null?Math.round(state.currency):c; }, function(){ _remoteReady=true; }); _pendingEarn=0; }  // first run: seed it
+          var p=snap.val();
+          if(p){ _remoteReady=true; applyPond(p); }                                          // shared record is the truth
+          else { ref.transaction(function(c){ return c==null?_localPond():c; }, function(){ _remoteReady=true; }); }  // first run: seed it
         });
       }).catch(function(){ /* auth blocked => stay local */ });
-    }catch(e){ _fbRef=null; }
+    }catch(e){ _pondRef=null; }
   },
   save:function(){
-    if(_fbRef && _remoteReady){ var d=Math.round(_pendingEarn); if(d!==0){ _pendingEarn-=d; _fbRef.transaction(function(c){ return (c||0)+d; }); } }
-    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn) })); }catch(e){}
+    if(_pondRef && _remoteReady){ var d=Math.round(_pendingEarn); if(d!==0){ _pendingEarn-=d; _pondRef.transaction(function(p){ p=p||{}; p.currency=(p.currency||0)+d; return p; }); } }
+    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{} })); }catch(e){}
   },
-  spend:function(n){   // atomic deduct for the future shop (check balance before calling)
-    if(_fbRef && _remoteReady){ _fbRef.transaction(function(c){ return Math.max(0,(c||0)-n); }); }
-    else { state.currency=Math.max(0,state.currency-n); store.save(); }
+  buyDuck:function(){
+    if(state.duckCount>=DUCK_LIMIT || Math.floor(state.currency)<duckCost()) return false;
+    if(_pondRef && _remoteReady){
+      _pondRef.transaction(function(p){ p=p||_localPond(); var c=500*(p.ducks||1);   // atomic: re-check affordability against the shared total
+        if((p.ducks||1)<DUCK_LIMIT && (p.currency||0)>=c){ p.currency-=c; p.ducks=(p.ducks||1)+1; } return p; });
+    } else { state.currency-=duckCost(); setDuckCount(state.duckCount+1); this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
+    return true;
+  },
+  buyVisitor:function(id){
+    if((state.unlocked&&state.unlocked[id]) || Math.floor(state.currency)<VISITOR_COST) return false;
+    if(_pondRef && _remoteReady){
+      _pondRef.transaction(function(p){ p=p||_localPond(); p.unlocked=p.unlocked||{};
+        if((p.currency||0)>=VISITOR_COST && !p.unlocked[id]){ p.currency-=VISITOR_COST; p.unlocked[id]=1; } return p; });
+    } else { state.currency-=VISITOR_COST; state.unlocked=state.unlocked||{}; state.unlocked[id]=1; this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
+    var v=visitorById(id); if(v) summonVisitor(v.make);   // show off the new guest right away
+    return true;
   }
 };
 // Seconds of no feeding (and no pellets left) before the flock falls asleep — re-rolled in this range each feed.
@@ -735,15 +779,19 @@ function initReeds(){
     state.reeds.push({x:shoreX(y)+rand(-5,3),y:y,h:(28+Math.random()*30)*depthScale(y),phase:rand(0,6.283),lean:rand(-0.2,0.2),hasCattail:Math.random()<0.6});
   }
 }
-var DUCK_COUNT=8;   
-function initDucks(){
-  state.ducks=[];
-  for(var i=0;i<DUCK_COUNT;i++){
-    var x=clamp(W*(0.12+0.76*((i*0.618033+0.21)%1)),30,W-30);
-    var y=clamp(groundTop+(H-groundTop)*(0.30+0.62*((i*0.381966+0.13)%1)),groundTop+30,H-30);
-    var size=0.88+((i*0.27+0.1)%1)*0.22;
-    state.ducks.push(new Duck({x:x,y:y,pal:PALS[i%PALS.length],size:size,seed:rand(0,6.283)}));
-  }
+var DUCK_LIMIT=100;   // max ducks the shop will sell up to
+function makeDuckAt(i){
+  var x=clamp(W*(0.12+0.76*((i*0.618033+0.21)%1)),30,W-30);
+  var y=clamp(groundTop+(H-groundTop)*(0.30+0.62*((i*0.381966+0.13)%1)),groundTop+30,H-30);
+  var size=0.88+((i*0.27+0.1)%1)*0.22;
+  return new Duck({x:x,y:y,pal:PALS[i%PALS.length],size:size,seed:rand(0,6.283)});
+}
+function initDucks(){ state.ducks=[]; for(var i=0;i<state.duckCount;i++) state.ducks.push(makeDuckAt(i)); }
+function setDuckCount(n){   // grow/shrink the flock to match the (shared) purchased count, leaving existing ducks be
+  n=clamp(Math.round(n),1,DUCK_LIMIT); state.duckCount=n;
+  if(!ducksInit) return;   // the very first build is handled by buildScene -> initDucks
+  while(state.ducks.length<n) state.ducks.push(makeDuckAt(state.ducks.length));
+  while(state.ducks.length>n) state.ducks.pop();
 }
 
 // ---------- spawns ----------
@@ -873,13 +921,15 @@ function spookFlock(cat){ // a pounce just landed: send every duck scarpering in
 // Each visitor has a display name (for the shop) and a maker. Add new animals here and they
 // auto-appear both in the random rotation and in the "call a visitor" shop.
 var VISITORS=[
-  { name:'Ginger cat', make:function(){ return new Cat(); } },
-  { name:'Koi fish',   make:function(){ return new Koi(); } },
-  { name:'Red panda',  make:function(){ return new RedPanda(); } },
-  { name:'Stork',      make:function(){ return new Stork(); } },
-  { name:'Dragonflies',make:function(){ return new Dragonfly(); } },
-  { name:'Frogs',      make:function(){ return new FrogFamily(); } }
+  { id:'cat',   name:'Ginger cat', make:function(){ return new Cat(); } },
+  { id:'koi',   name:'Koi fish',   make:function(){ return new Koi(); } },
+  { id:'panda', name:'Red panda',  make:function(){ return new RedPanda(); } },
+  { id:'stork', name:'Stork',      make:function(){ return new Stork(); } },
+  { id:'dragonfly', name:'Dragonflies', make:function(){ return new Dragonfly(); } },
+  { id:'frog',  name:'Frogs',      make:function(){ return new FrogFamily(); } }
 ];
+function visitorById(id){ for(var i=0;i<VISITORS.length;i++) if(VISITORS[i].id===id) return VISITORS[i]; return null; }
+function unlockedVisitors(){ var r=[]; for(var i=0;i<VISITORS.length;i++) if(state.unlocked&&state.unlocked[VISITORS[i].id]) r.push(VISITORS[i]); return r; }
 // Summon a specific guest right now (used by the shop), clearing any current one first.
 function summonVisitor(maker){
   if(state.visitor){
@@ -979,7 +1029,9 @@ function manageVisitor(dt){
   }
   // Spawn timing: wait for the interval, and don't barge in during active feeding.
   if(state.time>=state.nextVisitor && state.pellets.length===0){
-    state.visitor=VISITORS[randi(0,VISITORS.length-1)].make();
+    var pool=unlockedVisitors();                       // only guests you've bought show up
+    if(pool.length) state.visitor=pool[randi(0,pool.length-1)].make();
+    else scheduleNextVisitor();                          // none unlocked yet — check again later
   }
 }
 
@@ -2073,19 +2125,41 @@ function updateSndIcon(){
 }
 sndBtn.addEventListener('click',function(e){ e.stopPropagation(); audio.toggle(); updateSndIcon(); sndBtn.classList.toggle('on',audio.isOn()); });
 
-// ---------- shop (call a visitor on demand) ----------
+// ---------- shop (spend Quacks on ducks + visitors) ----------
+function shopRow(title, sub, btnText, enabled, onClick){
+  var row=document.createElement('div'); row.className='shopItem';
+  var left=document.createElement('div');
+  var nm=document.createElement('div'); nm.className='nm'; nm.textContent=title; left.appendChild(nm);
+  if(sub){ var s=document.createElement('div'); s.className='sub2'; s.textContent=sub; left.appendChild(s); }
+  var btn=document.createElement('button'); btn.textContent=btnText; btn.disabled=!enabled;
+  if(enabled && onClick) btn.addEventListener('click',function(e){ e.stopPropagation(); onClick(); });
+  row.appendChild(left); row.appendChild(btn); shopList.appendChild(row);
+}
 function buildShop(){
   shopList.innerHTML='';
-  for(var i=0;i<VISITORS.length;i++){
-    (function(v){
-      var row=document.createElement('div'); row.className='shopItem';
-      var nm=document.createElement('span'); nm.className='nm'; nm.textContent=v.name;
-      var btn=document.createElement('button'); btn.textContent='Call';
-      btn.addEventListener('click',function(e){ e.stopPropagation(); summonVisitor(v.make); closeShop(); hideHint(); });
-      row.appendChild(nm); row.appendChild(btn); shopList.appendChild(row);
-    })(VISITORS[i]);
+  var bal=Math.floor(state.currency);
+  // balance line
+  var balEl=document.createElement('div'); balEl.className='shopBal';
+  var ic=document.createElement('span'); ic.className='ic'; balEl.appendChild(ic);
+  balEl.appendChild(document.createTextNode(bal.toLocaleString()+' '+CURRENCY)); shopList.appendChild(balEl);
+  // ducks
+  if(state.duckCount>=DUCK_LIMIT){
+    shopRow('Duck', 'You have '+state.duckCount+' — pond is full!', 'Max', false, null);
+  } else {
+    var dc=duckCost();
+    shopRow('Duck', 'You have '+state.duckCount, '+1  ·  '+dc.toLocaleString(), bal>=dc, function(){ store.buyDuck(); hideHint(); buildShop(); });
   }
+  // visitors
+  var hd=document.createElement('div'); hd.className='shopHd'; hd.textContent='Visitors'; shopList.appendChild(hd);
+  for(var i=0;i<VISITORS.length;i++){ (function(v){
+    var owned=!!(state.unlocked&&state.unlocked[v.id]);
+    shopRow(v.name, owned?'Owned — drops by now and then':null,
+      owned?'Owned':('Buy  ·  '+VISITOR_COST.toLocaleString()),
+      !owned && bal>=VISITOR_COST,
+      function(){ store.buyVisitor(v.id); hideHint(); closeShop(); });
+  })(VISITORS[i]); }
 }
+function refreshShopUI(){ if(shopModal && shopModal.classList.contains('open')) buildShop(); }
 function openShop(){ buildShop(); shopModal.classList.add('open'); }
 function closeShop(){ shopModal.classList.remove('open'); }
 shopBtn.addEventListener('click',function(e){ e.stopPropagation(); openShop(); });
