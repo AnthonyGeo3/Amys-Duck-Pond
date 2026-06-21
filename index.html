@@ -120,6 +120,28 @@
     margin-top:13px;border:none;background:none;color:rgba(44,84,80,.6);
     font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;padding:6px;
   }
+  #duckModal{
+    position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(30,55,52,.34);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+    pointer-events:auto;z-index:21;padding:20px;
+  }
+  #duckModal.open{display:flex;}
+  #duckCard{
+    background:rgba(255,255,255,.96);border-radius:22px;padding:20px;
+    width:min(86vw,300px);box-shadow:0 16px 44px rgba(40,70,65,.32);text-align:center;
+  }
+  #duckTitle{display:flex;align-items:center;justify-content:center;gap:8px;color:#2c5450;font-size:18px;font-weight:700;}
+  #duckSwatch{width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1.5px rgba(60,70,60,.25);}
+  #duckCard p.sub{color:rgba(44,84,80,.6);font-size:12.5px;font-weight:500;margin:4px 0 14px;}
+  #duckName{
+    width:100%;box-sizing:border-box;border:1.5px solid rgba(143,200,198,.55);border-radius:12px;
+    padding:11px 13px;font-family:inherit;font-size:15px;color:#2c5450;text-align:center;outline:none;background:rgba(143,200,198,.10);
+  }
+  #duckName:focus{border-color:#5ba0a8;}
+  #duckBtns{display:flex;gap:10px;margin-top:14px;}
+  #duckSave{flex:1;border:none;border-radius:999px;padding:10px;font-family:inherit;font-weight:700;font-size:14px;background:#5ba0a8;color:#fff;cursor:pointer;}
+  #duckSave:active{transform:scale(.97);background:#4d8c93;}
+  #duckCloseBtn{border:none;background:none;color:rgba(44,84,80,.6);font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;padding:6px 12px;}
   #hint{
     position:absolute;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);
     transform:translateX(-50%);
@@ -166,7 +188,18 @@
         <button id="shopClose">Close</button>
       </div>
     </div>
-    <div id="hint"><span>Tap the pond to feed the ducks</span></div>
+    <div id="duckModal">
+      <div id="duckCard">
+        <div id="duckTitle"><span id="duckSwatch"></span><span id="duckBreed">Duck</span></div>
+        <p id="duckAge" class="sub">hatched just now</p>
+        <input id="duckName" type="text" maxlength="18" placeholder="Name this duck" autocomplete="off" />
+        <div id="duckBtns">
+          <button id="duckSave">Save</button>
+          <button id="duckCloseBtn">Close</button>
+        </div>
+      </div>
+    </div>
+    <div id="hint"><span>Tap to feed · hold a duck to name it</span></div>
   </div>
 
 <script>
@@ -183,6 +216,9 @@ var shopModal=document.getElementById('shopModal');
 var shopList=document.getElementById('shopList');
 var shopVisitors=document.getElementById('shopVisitors');
 var shopClose=document.getElementById('shopClose');
+var duckModal=document.getElementById('duckModal');
+var duckCard=document.getElementById('duckCard');
+var duckNameInput=document.getElementById('duckName');
 var coinVal=document.getElementById('coinVal');
 var coinLbl=document.querySelector('#coin .lbl');
 var _coinShown=-1;
@@ -207,6 +243,7 @@ var SAVE_KEY='duckpond_save_v1';
 var BABY_MS=24*60*60*1000;      // a newly bought duck stays a duckling for 24h, then grows up
 var _births=[];                 // shared per-duck birth timestamps (index-aligned with the flock; 0 = grown)
 var _colors=[];                 // shared per-duck palette index (index-aligned; rolled at purchase)
+var _names=[];                  // shared per-duck names (index-aligned; '' = unnamed)
 
 // Shared pond via Firebase Realtime Database. One record at ponds/shared that both phones subscribe to.
 // Earnings/spends are committed as atomic transactions so the two clients can't clobber each other.
@@ -234,6 +271,7 @@ function applyPond(p){           // mirror the shared record into local state + 
   var nducks=typeof p.ducks==='number'?p.ducks:1;
   _births=normBirths(p.births, nducks);
   _colors=normColors(p.colors, nducks);
+  _names=normNames(p.names, nducks);
   setDuckCount(nducks);
   syncDuckAges();
   state.unlocked=p.unlocked||{};
@@ -241,14 +279,15 @@ function applyPond(p){           // mirror the shared record into local state + 
 }
 function normBirths(b,n){ var out=[]; b=b||[]; for(var i=0;i<n;i++) out[i]=(typeof b[i]==='number')?b[i]:0; return out; }  // dense, length n, 0 = grown
 function normColors(c,n){ var out=[]; c=c||[]; for(var i=0;i<n;i++) out[i]=(typeof c[i]==='number'&&c[i]>=0&&c[i]<PALS.length)?c[i]:defaultDuckPal(i); return out; }   // dense; legacy ducks get a stable realistic colour
-function syncDuckAges(){ for(var i=0;i<state.ducks.length;i++){ var d=state.ducks[i]; d.bornAt=_births[i]||0; var ci=_colors[i]; if(typeof ci==='number'){ d.pal=PALS[ci]; d.golden=isGoldenPal(ci); } } }  // keep live ducks in step with the shared lists
-function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount) }; }
+function normNames(a,n){ var out=[]; a=a||[]; for(var i=0;i<n;i++) out[i]=(typeof a[i]==='string')?a[i].slice(0,18):''; return out; }   // dense; '' = unnamed
+function syncDuckAges(){ for(var i=0;i<state.ducks.length;i++){ var d=state.ducks[i]; d.bornAt=_births[i]||0; d.colIdx=(typeof _colors[i]==='number')?_colors[i]:defaultDuckPal(i); d.pal=PALS[d.colIdx]; d.golden=isGoldenPal(d.colIdx); d.name=_names[i]||''; } }  // keep live ducks in step with the shared lists
+function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount), names:normNames(_names,state.duckCount) }; }
 var store={
   load:function(){
     try{ var s=JSON.parse(localStorage.getItem(SAVE_KEY)||'{}');
       if(typeof s.pendingEarn==='number') _pendingEarn=s.pendingEarn;
       if(typeof s.currency==='number') state.currency=s.currency;
-      if(typeof s.ducks==='number'){ _births=normBirths(s.births, s.ducks); _colors=normColors(s.colors, s.ducks); setDuckCount(s.ducks); syncDuckAges(); }
+      if(typeof s.ducks==='number'){ _births=normBirths(s.births, s.ducks); _colors=normColors(s.colors, s.ducks); _names=normNames(s.names, s.ducks); setDuckCount(s.ducks); syncDuckAges(); }
       if(s.unlocked) state.unlocked=s.unlocked;
     }catch(e){}
     this._connect();
@@ -269,7 +308,7 @@ var store={
   },
   save:function(){
     if(_pondRef && _remoteReady){ var d=Math.round(_pendingEarn); if(d!==0){ _pendingEarn-=d; _pondRef.transaction(function(p){ p=p||{}; p.currency=(p.currency||0)+d; return p; }); } }
-    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount) })); }catch(e){}
+    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount), names:normNames(_names,state.duckCount) })); }catch(e){}
   },
   buyDuck:function(){
     if(state.duckCount>=DUCK_LIMIT || Math.floor(state.currency)<duckCost()) return false;
@@ -290,6 +329,14 @@ var store={
     } else { state.currency-=visitorCost(); state.unlocked=state.unlocked||{}; state.unlocked[id]=1; this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
     var v=visitorById(id); if(v) summonVisitor(v.make);   // show off the new guest right away
     return true;
+  },
+  setDuckName:function(index,name){
+    name=(name||'').slice(0,18);
+    if(index<0 || index>=state.duckCount) return;
+    if(state.ducks[index]) state.ducks[index].name=name;   // reflect immediately
+    if(_pondRef && _remoteReady){
+      _pondRef.transaction(function(p){ p=p||_localPond(); p.names=normNames(p.names,p.ducks||state.duckCount); p.names[index]=name; return p; });
+    } else { _names[index]=name; this.save(); }
   }
 };
 // Seconds of no feeding (and no pellets left) before the flock falls asleep — re-rolled in this range each feed.
@@ -360,6 +407,16 @@ var PAL_GOLD=[
  {body:'#f6c945',belly:'#fff0b0',wing:'#e0a92a',head:'#f3c33e',beak:'#ff8a2a',beakDark:'#d96a14',legs:'#ff9e2a',legDark:'#d97f18',eye:'#4a3a12',blush:'rgba(255,210,120,0.24)',neckRing:'#fff0b0'}    // golden (special)
 ];
 var PALS=PAL_COMMON.concat(PAL_BLACK,PAL_FANCY,PAL_GOLD);
+var PAL_NAMES=['White duck','Fawn duck','Chocolate duck','Blue duck','Cream duck','Khaki duck','Black duck','Emerald duck','Teal duck','Bluebird duck','Violet duck','Pink duck','Lime duck','Golden duck'];
+function breedLabel(idx){ return PAL_NAMES[idx]||'Duck'; }
+function hatchedAgo(born){
+  if(!born) return 'here from the very start';
+  var m=(Date.now()-born)/60000;
+  if(m<1) return 'hatched just now';
+  if(m<60) return 'hatched '+Math.floor(m)+' min ago';
+  var h=m/60; if(h<24) return 'hatched '+Math.floor(h)+'h ago';
+  var d=Math.floor(h/24); return 'hatched '+d+' day'+(d===1?'':'s')+' ago';
+}
 var PAL_BLACK0=PAL_COMMON.length, PAL_FANCY0=PAL_BLACK0+PAL_BLACK.length, PAL_GOLD0=PAL_FANCY0+PAL_FANCY.length;
 function rollDuckPal(){ var r=Math.random(), base, n;
   if(r<0.60){ base=0; n=PAL_COMMON.length; }
@@ -380,6 +437,7 @@ function duckProps(i){ return {                                                 
 function Duck(o){
   this.x=o.x; this.y=o.y; this.pal=o.pal; this.size=o.size; this.seed=o.seed||Math.random()*6.283;
   this.prop=o.prop||{wing:1,beak:1,foot:1,head:1,tall:1}; this.golden=!!o.golden; this.sparkT=rand(0.5,1.6);
+  this.name=o.name||''; this.colIdx=(typeof o.colIdx==='number')?o.colIdx:0;
   this.vx=0; this.vy=0; this.facing=Math.random()<0.5?1:-1;
   this.speed=0; this.legAmt=0;
   this.walkPhase=Math.random()*6.283; this.bobPhase=Math.random()*6.283;
@@ -888,7 +946,7 @@ function makeDuckAt(i){
   var y=clamp(groundTop+(H-groundTop)*(0.30+0.62*((i*0.381966+0.13)%1)),groundTop+30,H-30);
   var size=0.88+((i*0.27+0.1)%1)*0.22;
   var ci=(typeof _colors[i]==='number')?_colors[i]:defaultDuckPal(i);
-  return new Duck({x:x,y:y,pal:PALS[ci],size:size,seed:rand(0,6.283),bornAt:_births[i]||0,prop:duckProps(i),golden:isGoldenPal(ci)});
+  return new Duck({x:x,y:y,pal:PALS[ci],size:size,seed:rand(0,6.283),bornAt:_births[i]||0,prop:duckProps(i),golden:isGoldenPal(ci),colIdx:ci,name:_names[i]||''});
 }
 function initDucks(){ state.ducks=[]; for(var i=0;i<state.duckCount;i++) state.ducks.push(makeDuckAt(i)); }
 function setDuckCount(n){   // grow/shrink the flock to match the (shared) purchased count, leaving existing ducks be
@@ -1857,6 +1915,9 @@ function update(dt){
   assignFood();
   for(var i=0;i<state.ducks.length;i++) state.ducks[i].update(dt);
   updatePellets(dt); updateParticles(dt); updateRipples(dt); updateClouds(dt);
+  if(state.namePop){ state.namePop.t+=dt;   // the floating name tag lingers a moment after naming, then fades
+    if(state.ducks.indexOf(state.namePop.duck)<0) state.namePop=null;
+    else if(!duckModal.classList.contains('open') && state.namePop.t>2.8) state.namePop=null; }
 
   if (weather.loaded && weather.rain) {
     if (Math.random() < dt * 15) { 
@@ -1934,6 +1995,22 @@ function drawScene(g){
     else if(it.k===3) drawReed(g,it.o);
     else if(it.k===4) drawVisitor(g,it.o);
   }
+  if(state.namePop && state.namePop.duck) drawNameTag(g, state.namePop.duck);
+}
+function rrect(g,x,y,w,h,r){ g.beginPath(); g.moveTo(x+r,y); g.arcTo(x+w,y,x+w,y+h,r); g.arcTo(x+w,y+h,x,y+h,r); g.arcTo(x,y+h,x,y,r); g.arcTo(x,y,x+w,y,r); g.closePath(); }
+function drawNameTag(g,d){
+  if(!d || !d.name) return;
+  var sc=d.size*depthScale(d.y), tx=d.x, ty=d.y-48*sc;
+  var t=(state.namePop&&state.namePop.t)||0;
+  var a = duckModal.classList.contains('open') ? 1 : clamp(Math.min(t/0.2,(2.8-t)/0.5),0,1);
+  if(a<=0) return;
+  g.save(); g.font='600 12px system-ui, -apple-system, sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+  var w=g.measureText(d.name).width, bw=w+16, bh=20;
+  g.globalAlpha=a*0.95;
+  g.fillStyle='rgba(255,255,255,0.93)'; rrect(g,tx-bw/2,ty-bh/2,bw,bh,9); g.fill();
+  g.beginPath(); g.moveTo(tx-4,ty+bh/2-1); g.lineTo(tx+4,ty+bh/2-1); g.lineTo(tx,ty+bh/2+4); g.closePath(); g.fill();
+  g.globalAlpha=a; g.fillStyle='#2c5450'; g.fillText(d.name,tx,ty+0.5);
+  g.restore();
 }
 function drawPellet(g,pe){
   var ds=depthScale(pe.y), rv=3.6*ds;
@@ -2968,23 +3045,67 @@ shopModal.addEventListener('pointerdown',function(e){ e.stopPropagation(); });
 
 // ---------- input ----------
 var pressing=false,lastDropX=0,lastDropY=0,lastDropT=0;
+var pressTimer=null,pressDuck=null,downX=0,downY=0,suppressDrop=false;
 function evPos(e){ var r=canvas.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; }
 function doDrop(x,y){
   var cy=clamp(y,groundTop+6,H-6), cx=clamp(x,6,W-6);
   dropPellet(cx,cy); lastDropX=cx; lastDropY=cy; lastDropT=performance.now();
 }
+function duckHit(px,py){   // nearest duck whose torso the tap landed on
+  var best=null,bd=1e9;
+  for(var i=0;i<state.ducks.length;i++){ var d=state.ducks[i], sc=d.size*depthScale(d.y);
+    var cx=d.x, cy=d.y-20*sc, dist=Math.hypot(px-cx,py-cy);
+    if(dist<26*sc && dist<bd){ bd=dist; best=d; }
+  }
+  return best;
+}
+function clearPress(){ if(pressTimer){ clearTimeout(pressTimer); pressTimer=null; } pressDuck=null; }
 canvas.addEventListener('pointerdown',function(e){
-  pressing=true; try{canvas.setPointerCapture(e.pointerId);}catch(err){}
-  var p=evPos(e); doDrop(p.x,p.y);
+  pressing=true; suppressDrop=false; try{canvas.setPointerCapture(e.pointerId);}catch(err){}
+  var p=evPos(e); downX=p.x; downY=p.y;
+  pressDuck=duckHit(p.x,p.y);
+  if(pressDuck){   // hold to inspect; a quick tap still feeds (on release)
+    pressTimer=setTimeout(function(){ pressTimer=null; var d=pressDuck; pressDuck=null; pressing=false; suppressDrop=true; openDuckCard(d); }, 430);
+  } else {
+    doDrop(p.x,p.y);   // empty space → feed straight away
+  }
 });
 canvas.addEventListener('pointermove',function(e){
   if(!pressing) return;
   var p=evPos(e), now=performance.now();
-  if(now-lastDropT>90 && Math.hypot(p.x-lastDropX,p.y-lastDropY)>22) doDrop(p.x,p.y);
+  if(pressTimer){ if(Math.hypot(p.x-downX,p.y-downY)>14){ clearPress(); doDrop(p.x,p.y); } return; }   // moved before the hold fired → it's a feed-drag
+  if(!pressDuck && now-lastDropT>90 && Math.hypot(p.x-lastDropX,p.y-lastDropY)>22) doDrop(p.x,p.y);
 });
-canvas.addEventListener('pointerup',function(){ pressing=false; });
-canvas.addEventListener('pointercancel',function(){ pressing=false; });
+canvas.addEventListener('pointerup',function(){
+  if(pressTimer){ clearTimeout(pressTimer); pressTimer=null; if(!suppressDrop) doDrop(downX,downY); }   // quick tap on a duck → feed it
+  pressing=false; pressDuck=null;
+});
+canvas.addEventListener('pointercancel',function(){ clearPress(); pressing=false; });
 canvas.addEventListener('contextmenu',function(e){ e.preventDefault(); });
+
+// ----- Duck name card -----
+var editingDuck=null;
+function openDuckCard(d){
+  editingDuck=d;
+  document.getElementById('duckBreed').textContent=breedLabel(d.colIdx);
+  document.getElementById('duckSwatch').style.background=(d.pal&&d.pal.body)||'#f4efe6';
+  document.getElementById('duckAge').textContent=hatchedAgo(d.bornAt);
+  duckNameInput.value=d.name||'';
+  duckModal.classList.add('open');
+  state.namePop={duck:d,t:0};   // float the tag above it too
+  setTimeout(function(){ try{ duckNameInput.focus(); }catch(e){} },50);
+}
+function closeDuckCard(){ duckModal.classList.remove('open'); editingDuck=null; }
+function saveDuckName(){
+  if(editingDuck){ var idx=state.ducks.indexOf(editingDuck);
+    if(idx>=0){ store.setDuckName(idx, duckNameInput.value.trim()); state.namePop={duck:editingDuck,t:0}; } }
+  closeDuckCard();
+}
+document.getElementById('duckSave').addEventListener('click',function(e){ e.stopPropagation(); saveDuckName(); });
+document.getElementById('duckCloseBtn').addEventListener('click',function(e){ e.stopPropagation(); closeDuckCard(); });
+duckNameInput.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); saveDuckName(); } });
+duckModal.addEventListener('click',function(e){ if(e.target===duckModal) closeDuckCard(); });
+duckModal.addEventListener('pointerdown',function(e){ e.stopPropagation(); });
 
 // ---------- loop ----------
 function frame(now){
