@@ -900,6 +900,7 @@ function setDuckCount(n){   // grow/shrink the flock to match the (shared) purch
 
 // ---------- spawns ----------
 function dropPellet(x,y){
+  x=clamp(x,12,W-12); y=clamp(y,groundTop+28,H-14);   // keep the pellet within the ducks' reach (not up in the sky above the waterline)
   if(state.pellets.length>=60) state.pellets.shift();
   var inWater=isWater(x,y);
   state.pellets.push({x:x,y:y,z:24*depthScale(y),vz:0,inWater:inWater,claims:0,settled:false,bob:Math.random()*6.283});
