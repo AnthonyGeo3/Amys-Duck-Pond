@@ -87,6 +87,7 @@
   #shopCard{
     background:rgba(255,255,255,.94);border-radius:22px;padding:20px 20px 14px;
     width:min(88vw,340px);box-shadow:0 16px 44px rgba(40,70,65,.32);text-align:center;
+    max-height:90vh;display:flex;flex-direction:column;
   }
   #shopCard h2{color:#2c5450;font-size:18px;font-weight:700;}
   #shopCard p.sub{color:rgba(44,84,80,.6);font-size:12.5px;font-weight:500;margin:3px 0 14px;}
@@ -107,6 +108,14 @@
   .shopBal{display:flex;align-items:center;justify-content:center;gap:6px;color:#2c5450;font-weight:700;font-size:15px;margin-bottom:12px;}
   .shopBal .ic{width:16px;height:16px;border-radius:50%;background:radial-gradient(circle at 35% 32%, #ffe79a, #f3c33e 62%, #d9962a 100%);box-shadow:inset 0 0 0 1.3px rgba(180,130,30,.45);}
   .shopHd{color:rgba(44,84,80,.6);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;text-align:left;margin:6px 2px 1px;}
+  #shopVisitors{
+    flex:1 1 auto;min-height:0;overflow-y:auto;max-height:336px;
+    display:flex;flex-direction:column;gap:10px;margin-top:8px;padding:2px 5px 2px 1px;
+    -webkit-overflow-scrolling:touch;
+  }
+  #shopVisitors::-webkit-scrollbar{width:6px;}
+  #shopVisitors::-webkit-scrollbar-thumb{background:rgba(91,160,168,.5);border-radius:999px;}
+  #shopVisitors::-webkit-scrollbar-track{background:transparent;}
   #shopClose{
     margin-top:13px;border:none;background:none;color:rgba(44,84,80,.6);
     font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;padding:6px;
@@ -153,6 +162,7 @@
         <h2>Pond shop</h2>
         <p class="sub">Spend your Quacks</p>
         <div id="shopList"></div>
+        <div id="shopVisitors"></div>
         <button id="shopClose">Close</button>
       </div>
     </div>
@@ -171,6 +181,7 @@ var sndBtn=document.getElementById('snd');
 var shopBtn=document.getElementById('shop');
 var shopModal=document.getElementById('shopModal');
 var shopList=document.getElementById('shopList');
+var shopVisitors=document.getElementById('shopVisitors');
 var shopClose=document.getElementById('shopClose');
 var coinVal=document.getElementById('coinVal');
 var coinLbl=document.querySelector('#coin .lbl');
@@ -2759,39 +2770,43 @@ function updateSndIcon(){
 sndBtn.addEventListener('click',function(e){ e.stopPropagation(); audio.toggle(); updateSndIcon(); sndBtn.classList.toggle('on',audio.isOn()); });
 
 // ---------- shop (spend Quacks on ducks + visitors) ----------
-function shopRow(title, sub, btnText, enabled, onClick){
+function shopRow(title, sub, btnText, enabled, onClick, parent){
   var row=document.createElement('div'); row.className='shopItem';
   var left=document.createElement('div');
   var nm=document.createElement('div'); nm.className='nm'; nm.textContent=title; left.appendChild(nm);
   if(sub){ var s=document.createElement('div'); s.className='sub2'; s.textContent=sub; left.appendChild(s); }
   var btn=document.createElement('button'); btn.textContent=btnText; btn.disabled=!enabled;
   if(enabled && onClick) btn.addEventListener('click',function(e){ e.stopPropagation(); onClick(); });
-  row.appendChild(left); row.appendChild(btn); shopList.appendChild(row);
+  row.appendChild(left); row.appendChild(btn); (parent||shopList).appendChild(row);
 }
 function buildShop(){
-  shopList.innerHTML='';
+  shopList.innerHTML=''; shopVisitors.innerHTML='';
   var bal=Math.floor(state.currency);
-  // balance line
+  // balance line (fixed at the top)
   var balEl=document.createElement('div'); balEl.className='shopBal';
   var ic=document.createElement('span'); ic.className='ic'; balEl.appendChild(ic);
   balEl.appendChild(document.createTextNode(bal.toLocaleString()+' '+CURRENCY)); shopList.appendChild(balEl);
-  // ducks
+  // ducks (fixed)
   if(state.duckCount>=DUCK_LIMIT){
     shopRow('Duck', 'You have '+state.duckCount+' — pond is full!', 'Max', false, null);
   } else {
     var dc=duckCost();
     shopRow('Duck', 'You have '+state.duckCount, '+1  ·  '+dc.toLocaleString(), bal>=dc, function(){ store.buyDuck(); hideHint(); buildShop(); });
   }
-  // visitors
+  // visitors heading (fixed) + the list itself (scrolls; owned ones sink to the bottom)
   var hd=document.createElement('div'); hd.className='shopHd'; hd.textContent='Visitors'; shopList.appendChild(hd);
   var vc=visitorCost();   // same price for every unowned visitor; it climbs as you collect them
-  for(var i=0;i<VISITORS.length;i++){ (function(v){
-    var owned=!!(state.unlocked&&state.unlocked[v.id]);
-    shopRow(v.name, owned?'Owned — drops by now and then':null,
-      owned?'Owned':('Buy  ·  '+vc.toLocaleString()),
-      !owned && bal>=vc,
-      function(){ store.buyVisitor(v.id); hideHint(); closeShop(); });
-  })(VISITORS[i]); }
+  var avail=[], owned=[];
+  for(var i=0;i<VISITORS.length;i++){ (state.unlocked&&state.unlocked[VISITORS[i].id] ? owned : avail).push(VISITORS[i]); }
+  var ordered=avail.concat(owned);
+  for(var j=0;j<ordered.length;j++){ (function(v){
+    var isOwned=!!(state.unlocked&&state.unlocked[v.id]);
+    shopRow(v.name, isOwned?'Owned — drops by now and then':null,
+      isOwned?'Owned':('Buy  ·  '+vc.toLocaleString()),
+      !isOwned && bal>=vc,
+      function(){ store.buyVisitor(v.id); hideHint(); closeShop(); },
+      shopVisitors);
+  })(ordered[j]); }
 }
 function refreshShopUI(){ if(shopModal && shopModal.classList.contains('open')) buildShop(); }
 function openShop(){ buildShop(); shopModal.classList.add('open'); }
