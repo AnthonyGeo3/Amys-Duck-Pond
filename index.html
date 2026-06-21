@@ -206,6 +206,7 @@ var EARN_PER_MINUTE=100;        // passive earnings while the app is open
 var SAVE_KEY='duckpond_save_v1';
 var BABY_MS=24*60*60*1000;      // a newly bought duck stays a duckling for 24h, then grows up
 var _births=[];                 // shared per-duck birth timestamps (index-aligned with the flock; 0 = grown)
+var _colors=[];                 // shared per-duck palette index (index-aligned; rolled at purchase)
 
 // Shared pond via Firebase Realtime Database. One record at ponds/shared that both phones subscribe to.
 // Earnings/spends are committed as atomic transactions so the two clients can't clobber each other.
@@ -230,21 +231,24 @@ function addCurrency(n){ state.currency+=n; if(_pondRef) _pendingEarn+=n; }   //
 function applyPond(p){           // mirror the shared record into local state + the world
   p=p||{};
   state.currency=(typeof p.currency==='number'?p.currency:0)+_pendingEarn;
-  _births=normBirths(p.births, typeof p.ducks==='number'?p.ducks:1);
-  setDuckCount(typeof p.ducks==='number'?p.ducks:1);
+  var nducks=typeof p.ducks==='number'?p.ducks:1;
+  _births=normBirths(p.births, nducks);
+  _colors=normColors(p.colors, nducks);
+  setDuckCount(nducks);
   syncDuckAges();
   state.unlocked=p.unlocked||{};
   if(typeof refreshShopUI==='function') refreshShopUI();
 }
 function normBirths(b,n){ var out=[]; b=b||[]; for(var i=0;i<n;i++) out[i]=(typeof b[i]==='number')?b[i]:0; return out; }  // dense, length n, 0 = grown
-function syncDuckAges(){ for(var i=0;i<state.ducks.length;i++) state.ducks[i].bornAt=_births[i]||0; }  // keep live ducks in step with the shared birth list
-function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount) }; }
+function normColors(c,n){ var out=[]; c=c||[]; for(var i=0;i<n;i++) out[i]=(typeof c[i]==='number'&&c[i]>=0&&c[i]<PALS.length)?c[i]:defaultDuckPal(i); return out; }   // dense; legacy ducks get a stable realistic colour
+function syncDuckAges(){ for(var i=0;i<state.ducks.length;i++){ var d=state.ducks[i]; d.bornAt=_births[i]||0; var ci=_colors[i]; if(typeof ci==='number'){ d.pal=PALS[ci]; d.golden=isGoldenPal(ci); } } }  // keep live ducks in step with the shared lists
+function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount) }; }
 var store={
   load:function(){
     try{ var s=JSON.parse(localStorage.getItem(SAVE_KEY)||'{}');
       if(typeof s.pendingEarn==='number') _pendingEarn=s.pendingEarn;
       if(typeof s.currency==='number') state.currency=s.currency;
-      if(typeof s.ducks==='number'){ _births=normBirths(s.births, s.ducks); setDuckCount(s.ducks); syncDuckAges(); }
+      if(typeof s.ducks==='number'){ _births=normBirths(s.births, s.ducks); _colors=normColors(s.colors, s.ducks); setDuckCount(s.ducks); syncDuckAges(); }
       if(s.unlocked) state.unlocked=s.unlocked;
     }catch(e){}
     this._connect();
@@ -265,14 +269,17 @@ var store={
   },
   save:function(){
     if(_pondRef && _remoteReady){ var d=Math.round(_pendingEarn); if(d!==0){ _pendingEarn-=d; _pondRef.transaction(function(p){ p=p||{}; p.currency=(p.currency||0)+d; return p; }); } }
-    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount) })); }catch(e){}
+    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount) })); }catch(e){}
   },
   buyDuck:function(){
     if(state.duckCount>=DUCK_LIMIT || Math.floor(state.currency)<duckCost()) return false;
+    var newPal=rollDuckPal();   // roll this duck's colour once, so both clients store the same one
     if(_pondRef && _remoteReady){
       _pondRef.transaction(function(p){ p=p||_localPond(); var c=500*(p.ducks||1);   // atomic: re-check affordability against the shared total
-        if((p.ducks||1)<DUCK_LIMIT && (p.currency||0)>=c){ p.currency-=c; p.ducks=(p.ducks||1)+1; p.births=normBirths(p.births,p.ducks); p.births[p.ducks-1]=Date.now(); } return p; });   // newest duck starts its baby clock
-    } else { state.currency-=duckCost(); _births[state.duckCount]=Date.now(); setDuckCount(state.duckCount+1); this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
+        if((p.ducks||1)<DUCK_LIMIT && (p.currency||0)>=c){ p.currency-=c; p.ducks=(p.ducks||1)+1;
+          p.births=normBirths(p.births,p.ducks); p.births[p.ducks-1]=Date.now();
+          p.colors=normColors(p.colors,p.ducks); p.colors[p.ducks-1]=newPal; } return p; });   // newest duck starts its baby clock + keeps its colour
+    } else { state.currency-=duckCost(); _births[state.duckCount]=Date.now(); _colors[state.duckCount]=newPal; setDuckCount(state.duckCount+1); this.save(); if(typeof refreshShopUI==='function') refreshShopUI(); }
     return true;
   },
   buyVisitor:function(id){
@@ -329,16 +336,50 @@ async function syncWeather() {
 }
 
 // ---------- duck palettes ----------
-var PALS=[
- {body:'#f4efe6',belly:'#fffdf8',wing:'#e7e0d1',head:'#f4efe6',beak:'#f3ad3e',beakDark:'#d98e2a',legs:'#f3a23c',legDark:'#d98427',eye:'#3a342c',blush:'rgba(240,150,150,0.18)',neckRing:null},
- {body:'#caa06b',belly:'#f0e6d2',wing:'#b78a52',head:'#6f4f33',beak:'#586a74',beakDark:'#3d4953',legs:'#d98a45',legDark:'#b86f32',eye:'#241c14',blush:'rgba(220,140,120,0.16)',neckRing:'#f0e6d2'},
- {body:'#7c5739',belly:'#a07a56',wing:'#5f4128',head:'#5b3d27',beak:'#caa15c',beakDark:'#9e7a3e',legs:'#d98a45',legDark:'#b86f32',eye:'#1f1610',blush:'rgba(220,150,120,0.14)',neckRing:null},
- {body:'#929aa6',belly:'#cfd4db',wing:'#787f8c',head:'#5f6675',beak:'#586470',beakDark:'#3f4953',legs:'#d98a45',legDark:'#b86f32',eye:'#1d2128',blush:'rgba(200,150,160,0.12)',neckRing:null}
+// Duck colours, grouped by rarity. A bought duck rolls: 60% common, 15% black, 20% fancy, 5% golden.
+var PAL_COMMON=[
+ {body:'#f4efe6',belly:'#fffdf8',wing:'#e7e0d1',head:'#f4efe6',beak:'#f3ad3e',beakDark:'#d98e2a',legs:'#f3a23c',legDark:'#d98427',eye:'#3a342c',blush:'rgba(240,150,150,0.18)',neckRing:null},   // white
+ {body:'#caa06b',belly:'#f0e6d2',wing:'#b78a52',head:'#6f4f33',beak:'#586a74',beakDark:'#3d4953',legs:'#d98a45',legDark:'#b86f32',eye:'#241c14',blush:'rgba(220,140,120,0.16)',neckRing:'#f0e6d2'}, // mallard fawn
+ {body:'#7c5739',belly:'#a07a56',wing:'#5f4128',head:'#5b3d27',beak:'#caa15c',beakDark:'#9e7a3e',legs:'#d98a45',legDark:'#b86f32',eye:'#1f1610',blush:'rgba(220,150,120,0.14)',neckRing:null},   // chocolate
+ {body:'#929aa6',belly:'#cfd4db',wing:'#787f8c',head:'#5f6675',beak:'#586470',beakDark:'#3f4953',legs:'#d98a45',legDark:'#b86f32',eye:'#1d2128',blush:'rgba(200,150,160,0.12)',neckRing:null},   // blue-grey
+ {body:'#e9d9bf',belly:'#fbf3e4',wing:'#d6c19f',head:'#cdb491',beak:'#f0a83a',beakDark:'#cf8a26',legs:'#f0a83a',legDark:'#cf8527',eye:'#3a342c',blush:'rgba(240,150,150,0.16)',neckRing:null},   // cream buff
+ {body:'#9c7a4f',belly:'#c9ad82',wing:'#7d5d38',head:'#523a23',beak:'#5a6a72',beakDark:'#3d4a52',legs:'#d98a45',legDark:'#b86f32',eye:'#221a12',blush:'rgba(220,150,120,0.14)',neckRing:'#c9ad82'} // khaki
 ];
+var PAL_BLACK=[
+ {body:'#3a3b40',belly:'#6a6b72',wing:'#2c2d31',head:'#2f3034',beak:'#f0a83a',beakDark:'#cf8527',legs:'#e0992f',legDark:'#bd7a22',eye:'#14151a',blush:'rgba(200,140,140,0.10)',neckRing:null},     // black
+ {body:'#33352f',belly:'#5c5d55',wing:'#262820',head:'#243a2c',beak:'#d7c14f',beakDark:'#a8923a',legs:'#d98a45',legDark:'#b86f32',eye:'#12140f',blush:'rgba(200,150,120,0.10)',neckRing:'#7f9a68'} // cayuga green-sheen
+];
+var PAL_FANCY=[
+ {body:'#2bb6a0',belly:'#bdeee4',wing:'#1d8f7e',head:'#168f7c',beak:'#ff9e3d',beakDark:'#df7d1c',legs:'#ff9e3d',legDark:'#df7d1c',eye:'#16201d',blush:'rgba(255,200,150,0.16)',neckRing:'#bdeee4'}, // teal
+ {body:'#4f86e0',belly:'#cfe0fb',wing:'#3a68c0',head:'#2f55a8',beak:'#ffc23d',beakDark:'#e09a1c',legs:'#ffc23d',legDark:'#e09a1c',eye:'#16203a',blush:'rgba(255,200,150,0.16)',neckRing:'#cfe0fb'}, // blue
+ {body:'#9a6fd6',belly:'#e3d4f6',wing:'#7d52bd',head:'#6b46b0',beak:'#ffb13d',beakDark:'#df8f1c',legs:'#ffb13d',legDark:'#df8f1c',eye:'#1f1630',blush:'rgba(255,200,160,0.16)',neckRing:'#e3d4f6'}, // purple
+ {body:'#e878a8',belly:'#f9d6e6',wing:'#d4548a',head:'#c23f7e',beak:'#ffd24a',beakDark:'#e0a81c',legs:'#ffd24a',legDark:'#e0a81c',eye:'#301622',blush:'rgba(255,180,200,0.20)',neckRing:'#f9d6e6'}, // pink
+ {body:'#6fbf3f',belly:'#d6efb8',wing:'#549922',head:'#3b6d11',beak:'#ff9e3d',beakDark:'#df7d1c',legs:'#ff9e3d',legDark:'#df7d1c',eye:'#172810',blush:'rgba(220,200,140,0.16)',neckRing:'#d6efb8'}  // green
+];
+var PAL_GOLD=[
+ {body:'#f6c945',belly:'#fff0b0',wing:'#e0a92a',head:'#f3c33e',beak:'#ff8a2a',beakDark:'#d96a14',legs:'#ff9e2a',legDark:'#d97f18',eye:'#4a3a12',blush:'rgba(255,210,120,0.24)',neckRing:'#fff0b0'}    // golden (special)
+];
+var PALS=PAL_COMMON.concat(PAL_BLACK,PAL_FANCY,PAL_GOLD);
+var PAL_BLACK0=PAL_COMMON.length, PAL_FANCY0=PAL_BLACK0+PAL_BLACK.length, PAL_GOLD0=PAL_FANCY0+PAL_FANCY.length;
+function rollDuckPal(){ var r=Math.random(), base, n;
+  if(r<0.60){ base=0; n=PAL_COMMON.length; }
+  else if(r<0.75){ base=PAL_BLACK0; n=PAL_BLACK.length; }
+  else if(r<0.95){ base=PAL_FANCY0; n=PAL_FANCY.length; }
+  else { base=PAL_GOLD0; n=PAL_GOLD.length; }
+  return base+Math.floor(Math.random()*n);
+}
+function _frac(x){ x=Math.sin(x)*43758.5453; return x-Math.floor(x); }              // deterministic pseudo-random by index
+function defaultDuckPal(i){ return Math.floor(_frac(i*2.17+0.5)*PAL_COMMON.length); } // legacy/starting ducks: a stable realistic colour
+function isGoldenPal(idx){ return idx>=PAL_GOLD0; }
+function duckProps(i){ return {                                                       // small per-duck size jitter (~80-120%), stable by index
+  wing:0.82+_frac(i*12.9+1.3)*0.36, beak:0.82+_frac(i*7.7+4.1)*0.36,
+  foot:0.82+_frac(i*3.3+9.7)*0.36, head:0.92+_frac(i*5.1+2.7)*0.16,
+  tall:0.86+_frac(i*4.6+5.3)*0.32 }; }                                                 // overall height (feet stay planted) — the most individual-looking cue
 
 // ---------- Duck ----------
 function Duck(o){
   this.x=o.x; this.y=o.y; this.pal=o.pal; this.size=o.size; this.seed=o.seed||Math.random()*6.283;
+  this.prop=o.prop||{wing:1,beak:1,foot:1,head:1,tall:1}; this.golden=!!o.golden; this.sparkT=rand(0.5,1.6);
   this.vx=0; this.vy=0; this.facing=Math.random()<0.5?1:-1;
   this.speed=0; this.legAmt=0;
   this.walkPhase=Math.random()*6.283; this.bobPhase=Math.random()*6.283;
@@ -442,6 +483,17 @@ Duck.prototype.update=function(dt){
     if(gr&&gr.kind==='giraffe'){ var bp=giraffeBackPoint(gr); this.x=bp.x; this.y=bp.y; this.facing=gr.facing; }
     this.vx=0; this.vy=0; tx=this.x; ty=this.y; maxSpeed=0;
   }
+  else if(this.state==='toCapy'){
+    // waddle over to the loafing capybara to climb on
+    var cm=state.capyMount||{x:this.x,y:this.y};
+    tx=cm.x; ty=clamp(cm.y,groundTop+16,H-16); maxSpeed=WALK*1.25;
+  }
+  else if(this.state==='onCapy'){
+    // sat on the capybara's back, happily pitter-pattering its feet (handled near the bottom of update)
+    var cp=state.visitor;
+    if(cp&&cp.kind==='capybara'){ var cbp=capyBackPoint(cp); this.x=cbp.x; this.y=cbp.y; this.facing=cp.facing; }
+    this.vx=0; this.vy=0; tx=this.x; ty=this.y; maxSpeed=0;
+  }
   else if(this.state==='visit'){
     // amble over to a friendly spot near the guest and mill about happily
     var fr=state.friend||{x:this.x,y:this.y};
@@ -474,7 +526,7 @@ Duck.prototype.update=function(dt){
   this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
   this.x+=this.vx*dt; this.y+=this.vy*dt;
 
-  if(this.state!=='ride'){   // a riding duck is perched above the grass line; don't clamp it back down
+  if(this.state!=='ride'&&this.state!=='onCapy'){   // a duck perched on an animal's back shouldn't be clamped to the ground bounds
     var m=18;
     if(this.x<m){this.x=m;this.vx*=-0.3;} if(this.x>W-m){this.x=W-m;this.vx*=-0.3;}
     if(this.y<groundTop+m){this.y=groundTop+m;this.vy*=-0.3;} if(this.y>H-m){this.y=H-m;this.vy*=-0.3;}
@@ -483,6 +535,7 @@ Duck.prototype.update=function(dt){
   this.speed=Math.hypot(this.vx,this.vy);
   if(Math.abs(this.vx)>6) this.facing=this.vx>0?1:-1;
   this.legAmt=Math.min(1.1,this.speed/70);
+  if(this.state==='onCapy'){ this.pattering=true; this.legAmt=1.0; this.walkPhase+=dt*15; this.hop=Math.abs(Math.sin(this.walkPhase))*1.2; }   // happy fed-style pitter-patter feet
 
   this.walkPhase+=dt*(3+this.speed*0.10);
   this.bobPhase+=dt*(this.swimming?1.6:(4+this.speed*0.10));
@@ -557,6 +610,7 @@ Duck.prototype.update=function(dt){
 
   this.blink-=dt; this.blinkTimer-=dt;
   if(this.blinkTimer<=0){ this.blink=0.12; this.blinkTimer=2.5+Math.random()*5; }
+  if(this.golden){ this.sparkT-=dt; if(this.sparkT<=0){ var gd=depthScale(this.y); spawnSparkle(this.x+rand(-9,9), this.y-30*gd+rand(-6,6)); this.sparkT=rand(0.7,1.7); } }   // golden ducks twinkle
 
   if(this.swimming&&this.speed>8){ this.wakeT-=dt; if(this.wakeT<=0){ spawnRipple(this.x-this.facing*5*depthScale(this.y),this.y,10); this.wakeT=0.35; } }
 
@@ -579,6 +633,7 @@ Duck.prototype.update=function(dt){
 Duck.prototype.draw=function(g){
   var baby=1-(this.adultness===undefined?1:this.adultness);   // 0 = grown, 1 = newborn duckling
   var ds=depthScale(this.y), s=this.size*ds*(1-0.44*baby), p=this.pal, swim=this.swimming;
+  var PR=this.prop||{wing:1,beak:1,foot:1,head:1,tall:1};   // per-duck component size jitter
   g.save();
   g.translate(this.x,this.y);
 
@@ -590,8 +645,9 @@ Duck.prototype.draw=function(g){
   g.scale(this.facing,1);
   g.rotate(this.leanCur);
   g.scale(s,s);
+  if(PR.tall&&PR.tall!==1) g.scale(1,PR.tall);   // stretch height a touch, feet stay planted at the origin
 
-  var bodyRx=9.2,bodyRy=21.5,headR=7.8*(1+0.30*baby);   // ducklings: big round head...
+  var bodyRx=9.2,bodyRy=21.5,headR=7.8*(1+0.30*baby)*PR.head;   // ducklings: big round head...
   var bodyCenterY=swim?-15:-26;
   var bodyTopY=bodyCenterY-bodyRy+5;
   var headBaseX=1.8, headBaseY=bodyTopY-19*(1-0.34*baby);  // ...on a short little neck
@@ -646,17 +702,17 @@ Duck.prototype.draw=function(g){
       g.beginPath(); g.ellipse(0,0,headR*0.5,headR*0.85,0,0,Math.PI*2); g.fill(); g.restore();
     }
     g.save(); g.translate(-1.2,bodyCenterY+4); g.rotate(-0.16-self.wingFlap*0.7); g.translate(0,-Math.abs(self.wingFlap)*1.5);
-    g.fillStyle=p.wing; g.beginPath(); g.ellipse(0,0,wMax*0.7,bodyRy*0.5,0,0,Math.PI*2); g.fill();
+    g.fillStyle=p.wing; g.beginPath(); g.ellipse(0,0,wMax*0.7*PR.wing,bodyRy*0.5*PR.wing,0,0,Math.PI*2); g.fill();
     g.strokeStyle='rgba(0,0,0,0.06)'; g.lineWidth=0.8;
     for(var i=-1;i<=1;i++){ g.beginPath(); g.moveTo(-3,i*3+2); g.lineTo(5,i*3+5); g.stroke(); }
     g.restore();
     g.fillStyle=p.head; g.beginPath(); g.ellipse(hx,hy,headR,headR*0.97,0,0,Math.PI*2); g.fill();
     g.fillStyle=p.blush; g.beginPath(); g.ellipse(hx+headR*0.4,hy+headR*0.3,2.1,1.4,0,0,Math.PI*2); g.fill();
-    var bkx=hx+headR*0.62, bky=hy-0.6;
+    var bkx=hx+headR*0.62, bky=hy-0.6, bl=PR.beak;   // beak length jitter
     g.fillStyle=p.beak; g.beginPath();
-    g.moveTo(bkx-1.2,bky-2.9); g.quadraticCurveTo(bkx+8.4,bky-3.1,bkx+10.0,bky-0.6);
-    g.quadraticCurveTo(bkx+9.0,bky+2.6,bkx-1.2,bky+3.0); g.quadraticCurveTo(bkx+1.4,bky,bkx-1.2,bky-2.9); g.closePath(); g.fill();
-    g.strokeStyle=p.beakDark; g.lineWidth=0.8; g.beginPath(); g.moveTo(bkx-0.6,bky+0.2); g.quadraticCurveTo(bkx+6,bky-0.1,bkx+9.0,bky-0.5); g.stroke();
+    g.moveTo(bkx-1.2,bky-2.9); g.quadraticCurveTo(bkx+8.4*bl,bky-3.1,bkx+10.0*bl,bky-0.6);
+    g.quadraticCurveTo(bkx+9.0*bl,bky+2.6,bkx-1.2,bky+3.0); g.quadraticCurveTo(bkx+1.4,bky,bkx-1.2,bky-2.9); g.closePath(); g.fill();
+    g.strokeStyle=p.beakDark; g.lineWidth=0.8; g.beginPath(); g.moveTo(bkx-0.6,bky+0.2); g.quadraticCurveTo(bkx+6*bl,bky-0.1,bkx+9.0*bl,bky-0.5); g.stroke();
     g.fillStyle=p.beakDark; g.beginPath(); g.ellipse(bkx+2.4,bky-1.4,0.6,0.5,0,0,Math.PI*2); g.fill();
     var ex=hx+headR*0.28, ey=hy-headR*0.24;
     if(self.blink>0||self.drowsy>0.5){
@@ -679,7 +735,7 @@ Duck.prototype.draw=function(g){
       var footY=-footLift, hipX=baseX*0.4;
       g.strokeStyle=color; g.lineWidth=w; g.lineCap='round';
       g.beginPath(); g.moveTo(hipX,hipY); g.lineTo(footX,footY); g.stroke();
-      g.fillStyle=color; g.beginPath(); g.ellipse(footX+1.4,footY,3.4,1.6,0,0,Math.PI*2); g.fill();
+      g.fillStyle=color; g.beginPath(); g.ellipse(footX+1.4,footY,3.4*PR.foot,1.6*PR.foot,0,0,Math.PI*2); g.fill();
     }
     oneLeg(-1.7,ph+Math.PI,p.legDark,2.8);
     oneLeg(2.4,ph,p.legs,3.1);
@@ -831,7 +887,8 @@ function makeDuckAt(i){
   var x=clamp(W*(0.12+0.76*((i*0.618033+0.21)%1)),30,W-30);
   var y=clamp(groundTop+(H-groundTop)*(0.30+0.62*((i*0.381966+0.13)%1)),groundTop+30,H-30);
   var size=0.88+((i*0.27+0.1)%1)*0.22;
-  return new Duck({x:x,y:y,pal:PALS[i%PALS.length],size:size,seed:rand(0,6.283),bornAt:_births[i]||0});
+  var ci=(typeof _colors[i]==='number')?_colors[i]:defaultDuckPal(i);
+  return new Duck({x:x,y:y,pal:PALS[ci],size:size,seed:rand(0,6.283),bornAt:_births[i]||0,prop:duckProps(i),golden:isGoldenPal(ci)});
 }
 function initDucks(){ state.ducks=[]; for(var i=0;i<state.duckCount;i++) state.ducks.push(makeDuckAt(i)); }
 function setDuckCount(n){   // grow/shrink the flock to match the (shared) purchased count, leaving existing ducks be
@@ -864,6 +921,7 @@ function spawnTap(x,y){ state.particles.push({type:'ring',x:x,y:y,maxR:22,t:0,li
 function spawnRipple(x,y,maxR){ if(state.ripples.length>60) state.ripples.shift(); state.ripples.push({x:x,y:y,maxR:maxR,r:2,t:0,life:1.1}); }
 function spawnZzz(x,y,dir){ state.particles.push({type:'zzz',x:x,y:y,vx:(dir||1)*rand(4,9),vy:rand(-24,-16),s:rand(9,14),t:0,life:rand(1.9,2.6)}); }
 function spawnDrop(x,y,vx,vy){ if(state.particles.length>240) return; state.particles.push({type:'drop',x:x,y:y,vx:vx,vy:vy,r:rand(1.2,2.1),t:0,life:rand(0.7,1.25)}); }   // elephant's spray
+function spawnSparkle(x,y){ if(state.particles.length>240) return; state.particles.push({type:'sparkle',x:x,y:y,vy:rand(-10,-3),s:rand(2.4,3.8),rot:rand(0,1.57),t:0,life:rand(0.6,0.95)}); }   // golden duck twinkle
 
 // ---------- food assignment ----------
 function assignFood(){
@@ -908,6 +966,7 @@ function updateParticles(dt){
     else if(p.type==='zzz'){ p.y+=p.vy*dt; p.x+=p.vx*dt; }
     else if(p.type==='drop'){ p.vy+=g*dt; p.x+=p.vx*dt; p.y+=p.vy*dt;
       if(p.life-p.t<dt && isWater(p.x,p.y)) spawnRipple(p.x,p.y,8); }   // little plip where rain lands on the pond
+    else if(p.type==='sparkle'){ p.y+=p.vy*dt; }
     if(p.t>=p.life) state.particles.splice(i,1);
   }
 }
@@ -988,7 +1047,8 @@ var VISITORS=[
   { id:'penguin', name:'Penguin',  make:function(){ return new Penguin(); } },
   { id:'shark', name:'Shark',      make:function(){ return new Shark(); } },
   { id:'elephant', name:'Elephant', make:function(){ return new Elephant(); } },
-  { id:'dog', name:'Dog',          make:function(){ return new Dog(); } }
+  { id:'dog', name:'Dog',          make:function(){ return new Dog(); } },
+  { id:'capybara', name:'Capybara', make:function(){ return new Capybara(); } }
 ];
 function visitorById(id){ for(var i=0;i<VISITORS.length;i++) if(VISITORS[i].id===id) return VISITORS[i]; return null; }
 function unlockedVisitors(){ var r=[]; for(var i=0;i<VISITORS.length;i++) if(state.unlocked&&state.unlocked[VISITORS[i].id]) r.push(VISITORS[i]); return r; }
@@ -998,8 +1058,8 @@ function summonVisitor(maker){
     if(state.visitor.spooks||state.visitor.befriends){ for(var i=0;i<state.ducks.length;i++){ state.ducks[i].pickIdle(); state.ducks[i].friendDecided=false; } }
     if(state.dfChaser) state.dfChaser.pickIdle();
     if(state.frogChaser) state.frogChaser.pickIdle();
-    for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic'||state.ducks[mj].state==='ride'||state.ducks[mj].state==='toGiraffe') state.ducks[mj].pickIdle();
-    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null; state.giraffeMount=null;
+    for(var mj=0;mj<state.ducks.length;mj++){ var ms=state.ducks[mj].state; if(ms==='mimic'||ms==='ride'||ms==='toGiraffe'||ms==='onCapy'||ms==='toCapy') state.ducks[mj].pickIdle(); }
+    state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null; state.giraffeMount=null; state.capyMount=null;
   }
   state.visitor=maker();
   scheduleNextVisitor();
@@ -1119,13 +1179,33 @@ function manageVisitor(dt){
           }
         }
       }
+    } else if(state.visitor.loafs){
+      // Capybara: one duck climbs onto the loafing capybara's back and happily pitter-patters its feet.
+      var cap=state.visitor;
+      state.capyMount={ x:clamp(cap.x+cap.facing*20,16,W-16), y:clamp(cap.y+8,groundTop+16,H-16) };   // climb-on spot beside it
+      if(cap.rider){
+        var crd=cap.rider;
+        if(crd.state==='toCapy'){
+          if(Math.hypot(crd.x-state.capyMount.x,crd.y-state.capyMount.y)<24 && cap.loaf>0.5){ crd.state='onCapy'; crd.hop=4; spawnHeart(cap.x,cap.y-30*depthScale(cap.y)); }
+          else if(cap.state!=='loaf'&&cap.state!=='settle'){ crd.pickIdle(); cap.rider=null; }   // gave up
+        } else if(crd.state==='onCapy'){
+          if(cap.state!=='loaf'){ crd.x=clamp(cap.x-cap.facing*24,16,W-16); crd.y=clamp(cap.y+8,groundTop+16,H-16); crd.vx=0; crd.vy=0; crd.pickIdle(); cap.rider=null; }   // capy getting up → hop down
+        } else cap.rider=null;
+      } else if(cap.state==='loaf' && cap.loaf>0.6 && cap.lifeT<cap.life-4){
+        var cpick=null, cpd=170;
+        for(var ci2=0;ci2<state.ducks.length;ci2++){ var cdk=state.ducks[ci2];
+          if(cdk.state!=='wander'&&cdk.state!=='pause'&&cdk.state!=='peck') continue;
+          var cdd=Math.hypot(cdk.x-cap.x,cdk.y-cap.y); if(cdd<cpd){ cpd=cdd; cpick=cdk; }
+        }
+        if(cpick && Math.random()<dt*0.9){ cpick.state='toCapy'; cpick.targetPellet=null; cap.rider=cpick; }
+      }
     }
     if(state.visitor.done){
       var wasReact=state.visitor.spooks||state.visitor.befriends;
       if(state.dfChaser){ state.dfChaser.pickIdle(); }
       if(state.frogChaser){ state.frogChaser.pickIdle(); }
-      for(var mj=0;mj<state.ducks.length;mj++) if(state.ducks[mj].state==='mimic'||state.ducks[mj].state==='ride'||state.ducks[mj].state==='toGiraffe'||state.ducks[mj].state==='spooked') state.ducks[mj].pickIdle();
-      state.giraffeMount=null;
+      for(var mj=0;mj<state.ducks.length;mj++){ var ms=state.ducks[mj].state; if(ms==='mimic'||ms==='ride'||ms==='toGiraffe'||ms==='spooked'||ms==='onCapy'||ms==='toCapy') state.ducks[mj].pickIdle(); }
+      state.giraffeMount=null; state.capyMount=null;
       state.visitor=null; state.alarm=null; state.huddle=null; state.scare=0; state.chased=null; state.friend=null; state.dfChaser=null; state.dfTarget=null; state.frogChaser=null; state.frogTarget=null;
       if(wasReact){ for(var j=0;j<state.ducks.length;j++){ state.ducks[j].pickIdle(); state.ducks[j].friendDecided=false; } state.lastFeed=state.time; rollSleepDelay(); }
       if(state.time>=state.nextVisitor) scheduleNextVisitor();   // countdown already started at arrival; only re-roll if the visit outlasted it
@@ -1481,6 +1561,40 @@ Dog.prototype.update=function(dt){
   this.hop=(this.state==='splash')?Math.abs(Math.sin(this.stateT*18))*3:Math.abs(Math.sin(this.walkPhase))*Math.min(1,this.speed/90)*4;
 };
 
+// ----- Capybara: ambles in, flops into a loaf; a duck climbs on and pitter-patters its feet; it's utterly unbothered, then wanders off -----
+var CAPY_S=1.0;
+function Capybara(){
+  this.kind='capybara'; this.spooks=false; this.loafs=true; this.done=false;
+  this.life=rand(32,48); this.lifeT=0;
+  this.y=clamp(groundTop+(H-groundTop)*rand(0.42,0.82),groundTop+70,H-46);
+  this.x=W+44; this.facing=-1; this.vx=0; this.vy=0; this.speed=0; this.walkPhase=0;
+  this.state='enter'; this.stateT=0; this.loaf=0; this.blink=0; this.blinkT=rand(2,5); this.ear=0; this.rider=null;
+  this.tx=clamp(shoreX(this.y)+rand(64,110),60,W-40); this.ty=this.y;     // a loaf spot well onto the grass
+}
+Capybara.prototype.update=function(dt){
+  this.stateT+=dt; this.lifeT+=dt;
+  var maxSpeed=0, loafT=0;
+  if(this.state==='enter'){ maxSpeed=44;
+    if(Math.hypot(this.tx-this.x,this.ty-this.y)<12){ this.state='settle'; this.stateT=0; this.facing=-1; }
+  } else if(this.state==='settle'){ maxSpeed=0; this.facing=-1; if(this.stateT>0.5){ this.state='loaf'; this.stateT=0; } }
+  else if(this.state==='loaf'){ maxSpeed=0; loafT=1; if(this.lifeT>this.life){ this.state='getUp'; this.stateT=0; } }
+  else if(this.state==='getUp'){ maxSpeed=0; loafT=0; if(this.loaf<0.12 && this.stateT>0.4){ this.state='leave'; this.tx=W+60; this.ty=this.y; this.stateT=0; } }
+  else if(this.state==='leave'){ maxSpeed=48; loafT=0; if(this.x>W+40) this.done=true; }
+  this.loaf+=(loafT-this.loaf)*Math.min(1,dt*3);
+  var dx=this.tx-this.x, dy=this.ty-this.y, dd=Math.hypot(dx,dy)||1, desVx=0,desVy=0;
+  if(maxSpeed>0&&dd>2){ desVx=dx/dd*maxSpeed; desVy=dy/dd*maxSpeed; }
+  var steer=Math.min(1,dt*4); this.vx+=(desVx-this.vx)*steer; this.vy+=(desVy-this.vy)*steer;
+  this.x+=this.vx*dt; this.y+=this.vy*dt;
+  if(this.state!=='leave'){ var edge=landX(this.y,16); if(this.x<edge){ this.x=edge; this.vx+=8; } }   // stay on the grass
+  this.y=clamp(this.y,groundTop+30,H-20);
+  this.speed=Math.hypot(this.vx,this.vy);
+  if(Math.abs(this.vx)>5) this.facing=this.vx>0?1:-1;
+  this.walkPhase+=dt*(2.6+this.speed*0.08);
+  this.blink-=dt; this.blinkT-=dt; if(this.blinkT<=0){ this.blink=0.12; this.blinkT=rand(2,5); }
+  this.ear=Math.sin(this.lifeT*1.3)*0.5;
+};
+function capyBackPoint(c){ var s=depthScale(c.y)*CAPY_S; return { x:c.x+c.facing*(-3)*s, y:c.y+(-26)*s }; }
+
 // ----- Red panda: ambles around the grass; nearby ducks toddle over to be near their friend -----
 function RedPanda(){
   this.kind='panda'; this.spooks=false; this.befriends=true; this.done=false;
@@ -1813,7 +1927,7 @@ function drawScene(g){
   items.sort(function(a,b){return a.y-b.y;});
   for(i=0;i<items.length;i++){
     var it=items[i];
-    if(it.k===0){ if(it.o.state==='ride') continue; it.o.draw(g); }   // the rider is drawn on top of the giraffe by drawGiraffe
+    if(it.k===0){ if(it.o.state==='ride'||it.o.state==='onCapy') continue; it.o.draw(g); }   // a duck riding an animal's back is drawn on top by that animal
     else if(it.k===1) drawPellet(g,it.o);
     else if(it.k===2) drawLily(g,it.o);
     else if(it.k===3) drawReed(g,it.o);
@@ -1861,7 +1975,7 @@ function drawReed(g,rd){
     g.strokeStyle='#5f923c'; g.lineWidth=1; g.beginPath(); g.moveTo(tx,ty); g.lineTo(tx+sway*0.08,ty-rd.h*0.14); g.stroke();
   }
 }
-function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); else if(v.kind==='giraffe') drawGiraffe(g,v); else if(v.kind==='otters') drawOtters(g,v); else if(v.kind==='penguin') drawPenguin(g,v); else if(v.kind==='shark') drawShark(g,v); else if(v.kind==='elephant') drawElephant(g,v); else if(v.kind==='dog') drawDog(g,v); }
+function drawVisitor(g,v){ if(v.kind==='cat') drawCat(g,v); else if(v.kind==='koi') drawKoi(g,v); else if(v.kind==='panda') drawPanda(g,v); else if(v.kind==='stork') drawStork(g,v); else if(v.kind==='dragonfly') drawDragonfly(g,v); else if(v.kind==='frog') drawFrogFamily(g,v); else if(v.kind==='giraffe') drawGiraffe(g,v); else if(v.kind==='otters') drawOtters(g,v); else if(v.kind==='penguin') drawPenguin(g,v); else if(v.kind==='shark') drawShark(g,v); else if(v.kind==='elephant') drawElephant(g,v); else if(v.kind==='dog') drawDog(g,v); else if(v.kind==='capybara') drawCapybara(g,v); }
 function drawFrogFamily(g,fam){
   var all=fam.babies.concat([fam.parent]); all.sort(function(a,b){return a.y-b.y;});
   for(var i=0;i<all.length;i++) drawFrog(g,all[i]);
@@ -2364,6 +2478,34 @@ function drawDog(g,p){
   g.fillStyle='rgba(255,255,255,0.8)'; g.beginPath(); g.ellipse(20.5,by-13.6,0.5,0.6,0,0,Math.PI*2); g.fill();
   g.restore();
 }
+function drawCapybara(g,c){
+  var ds=depthScale(c.y), s=ds*CAPY_S, l=c.loaf||0;
+  var C={fur:'#9a6b43',furD:'#7e5634',belly:'#ad8459',ear:'#6f4b2c',nose:'#3a2a1d',eye:'#201712'};
+  g.save(); g.translate(c.x,c.y);
+  g.fillStyle='rgba(45,55,45,0.16)'; g.beginPath(); g.ellipse(0,0,30*s,6*s,0,0,Math.PI*2); g.fill();
+  g.scale(c.facing,1); g.scale(s,s);
+  var legLen=lerp(11,2.5,l), hipY=lerp(-11,-7,l);
+  g.strokeStyle=C.furD; g.lineCap='round'; g.lineWidth=7;                 // far legs
+  g.beginPath(); g.moveTo(-15,hipY); g.lineTo(-15,hipY+legLen); g.stroke();
+  g.beginPath(); g.moveTo(13,hipY); g.lineTo(13,hipY+legLen); g.stroke();
+  var byc=lerp(-19,-14,l), brx=lerp(27,29,l), bry=lerp(13.5,12,l);        // barrel body
+  g.fillStyle=C.fur; g.beginPath(); g.ellipse(-2,byc,brx,bry,0,0,Math.PI*2); g.fill();
+  g.fillStyle=C.belly; g.beginPath(); g.ellipse(-2,byc+bry*0.5,brx*0.7,bry*0.42,0,0,Math.PI*2); g.fill();
+  g.strokeStyle=C.fur; g.lineWidth=7.6;                                    // near legs
+  g.beginPath(); g.moveTo(-12,hipY); g.lineTo(-12,hipY+legLen); g.stroke();
+  g.beginPath(); g.moveTo(16,hipY); g.lineTo(16,hipY+legLen); g.stroke();
+  if(l<0.7){ g.fillStyle=C.furD; [-12,16].forEach(function(fx){ g.beginPath(); g.ellipse(fx,hipY+legLen,3,2,0,0,Math.PI*2); g.fill(); }); }
+  var hx=26, hy=lerp(-24,-19,l);                                           // blocky head at the front
+  g.fillStyle=C.fur; g.beginPath(); g.ellipse(hx,hy,10,9,0,0,Math.PI*2); g.fill();
+  g.fillStyle=C.ear; g.beginPath(); g.ellipse(hx-5,hy-8+(c.ear||0),3,2.7,0,0,Math.PI*2); g.fill();   // ears
+  g.beginPath(); g.ellipse(hx+3,hy-8.5,3,2.7,0,0,Math.PI*2); g.fill();
+  g.fillStyle=C.fur; g.beginPath(); g.ellipse(hx+9,hy+1.5,5.2,5,0,0,Math.PI*2); g.fill();             // blunt muzzle
+  g.fillStyle=C.nose; g.beginPath(); g.ellipse(hx+12.5,hy+0.5,2.3,1.7,0,0,Math.PI*2); g.fill();
+  if(c.blink<=0){ g.fillStyle=C.eye; g.beginPath(); g.ellipse(hx+1,hy-3,1.7,1.9,0,0,Math.PI*2); g.fill(); }
+  else { g.strokeStyle=C.eye; g.lineWidth=1; g.beginPath(); g.moveTo(hx-1,hy-3); g.lineTo(hx+3,hy-3); g.stroke(); }
+  g.restore();
+  if(c.rider && c.rider.state==='onCapy') c.rider.draw(g);                  // the pitter-pattering duck on top
+}
 function catLeg(g,hipX,hipY,phase,amt,color,w){
   var footX=hipX+Math.sin(phase)*5*amt;
   var footY=-Math.max(0,Math.sin(phase+Math.PI/2))*4*amt;
@@ -2489,6 +2631,13 @@ function drawParticles(g){
       var fall=p.vy>0;                                   // streak as it falls, bead as it rises
       g.globalAlpha=clamp(1-kk*0.5,0,1)*0.85; g.fillStyle='rgba(150,206,228,0.95)';
       g.beginPath(); g.ellipse(p.x,p.y,p.r,p.r*(fall?1.7:1.2),0,0,Math.PI*2); g.fill();
+    } else if(p.type==='sparkle'){
+      var sa=Math.sin(Math.min(1,kk)*Math.PI), sz=p.s*(0.5+0.5*sa);   // twinkle in and out — a little 4-point star
+      g.save(); g.translate(p.x,p.y); g.rotate(p.rot); g.globalAlpha=sa;
+      g.fillStyle='rgba(255,225,120,0.95)';
+      g.beginPath();
+      for(var sp=0;sp<4;sp++){ var a=sp/4*Math.PI*2; g.lineTo(Math.cos(a)*sz,Math.sin(a)*sz); var a2=a+Math.PI/4; g.lineTo(Math.cos(a2)*sz*0.34,Math.sin(a2)*sz*0.34); }
+      g.closePath(); g.fill(); g.restore();
     } else if(p.type==='zzz'){
       var za=clamp(1-kk,0,1)*0.85, zsz=p.s*(0.7+0.3*Math.min(1,p.t/0.3));
       g.globalAlpha=za; g.fillStyle='#f3f6ff'; g.textAlign='center'; g.textBaseline='middle';
