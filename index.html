@@ -78,12 +78,32 @@
   }
   #shop:active{transform:scale(.92);}
   #shop svg{width:22px;height:22px;}
-  #shopModal{
+  #roster{
+    position:absolute;top:calc(env(safe-area-inset-top,0px) + 112px);right:14px;
+    width:42px;height:42px;border-radius:50%;border:none;
+    background:rgba(255,255,255,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    box-shadow:0 4px 14px rgba(40,70,65,.18);
+    pointer-events:auto;cursor:pointer;display:flex;align-items:center;justify-content:center;
+    color:#2c5450;transition:transform .15s ease,background .2s ease;
+  }
+  #roster:active{transform:scale(.92);}
+  #roster svg{width:24px;height:24px;}
+  #rosterList{flex:1 1 auto;min-height:0;overflow-y:auto;max-height:60vh;display:flex;flex-direction:column;gap:10px;margin-top:10px;padding:2px 5px 2px 1px;-webkit-overflow-scrolling:touch;}
+  #rosterList::-webkit-scrollbar{width:6px;} #rosterList::-webkit-scrollbar-thumb{background:rgba(91,160,168,.5);border-radius:999px;}
+  .rosterRow{display:flex;align-items:center;gap:11px;background:rgba(143,200,198,.16);border:1px solid rgba(143,200,198,.4);border-radius:14px;padding:8px 10px;}
+  .rosterRow canvas{width:46px;height:54px;flex:none;}
+  .rosterRow .info{flex:1 1 auto;min-width:0;text-align:left;}
+  .rosterRow .rn{color:#2c5450;font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .rosterRow .rn.unnamed{color:rgba(44,84,80,.45);font-style:italic;font-weight:500;}
+  .rosterRow .rsub{color:rgba(44,84,80,.6);font-size:11px;margin-top:1px;}
+  .rosterRow button{flex:none;border:none;border-radius:999px;padding:7px 12px;font-family:inherit;font-weight:700;font-size:12px;background:#5ba0a8;color:#fff;cursor:pointer;}
+  .rosterRow button:active{transform:scale(.95);background:#4d8c93;}
+  #shopModal, #rosterModal{
     position:absolute;inset:0;display:none;align-items:center;justify-content:center;
     background:rgba(30,55,52,.34);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
     pointer-events:auto;z-index:20;padding:20px;
   }
-  #shopModal.open{display:flex;}
+  #shopModal.open, #rosterModal.open{display:flex;}
   #shopCard{
     background:rgba(255,255,255,.94);border-radius:22px;padding:20px 20px 14px;
     width:min(88vw,340px);box-shadow:0 16px 44px rgba(40,70,65,.32);text-align:center;
@@ -179,6 +199,14 @@
         <path d="M2.4 6.7l1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7 1.6 1.7 1.6-1.7" fill="#e2674a"/>
       </svg>
     </button>
+    <button id="roster" aria-label="Open the flock roster">
+      <svg viewBox="0 0 24 24">
+        <path d="M14.5 12.5 q5 -0.6 7.2 1.3 q-1.4 2.2 -7.2 1.4 z" fill="#f0a02e"/>
+        <circle cx="9.5" cy="10.5" r="6.6" fill="#f3d36b"/>
+        <circle cx="11" cy="8.6" r="1.5" fill="#2c2018"/>
+        <circle cx="11.5" cy="8.1" r="0.5" fill="#fff"/>
+      </svg>
+    </button>
     <div id="shopModal">
       <div id="shopCard">
         <h2>Pond shop</h2>
@@ -197,6 +225,14 @@
           <button id="duckSave">Save</button>
           <button id="duckCloseBtn">Close</button>
         </div>
+      </div>
+    </div>
+    <div id="rosterModal">
+      <div id="shopCard">
+        <h2>Your flock</h2>
+        <p class="sub" id="rosterSub">All your ducks</p>
+        <div id="rosterList"></div>
+        <button id="rosterClose">Close</button>
       </div>
     </div>
     <div id="hint"><span>Tap to feed · hold a duck to name it</span></div>
@@ -219,6 +255,9 @@ var shopClose=document.getElementById('shopClose');
 var duckModal=document.getElementById('duckModal');
 var duckCard=document.getElementById('duckCard');
 var duckNameInput=document.getElementById('duckName');
+var rosterBtn=document.getElementById('roster');
+var rosterModal=document.getElementById('rosterModal');
+var rosterList=document.getElementById('rosterList');
 var coinVal=document.getElementById('coinVal');
 var coinLbl=document.querySelector('#coin .lbl');
 var _coinShown=-1;
@@ -237,13 +276,17 @@ var state={ducks:[],pellets:[],particles:[],ripples:[],clouds:[],lilies:[],reeds
 
 // ---------- currency ("Quacks") ----------
 var CURRENCY='Quacks';          // rename here to taste
-var EARN_PER_PELLET=1;          // +1 each time a duck actually eats a pellet
+var EARN_PER_PELLET=1;          // +1 each time a normal duck eats a pellet
+var GOLD_EARN_PER_PELLET=10;    // a golden duck's pellets are worth 10x
 var EARN_PER_MINUTE=100;        // passive earnings while the app is open
 var SAVE_KEY='duckpond_save_v1';
 var BABY_MS=24*60*60*1000;      // a newly bought duck stays a duckling for 24h, then grows up
 var _births=[];                 // shared per-duck birth timestamps (index-aligned with the flock; 0 = grown)
 var _colors=[];                 // shared per-duck palette index (index-aligned; rolled at purchase)
 var _names=[];                  // shared per-duck names (index-aligned; '' = unnamed)
+var _eaten=[];                  // shared per-duck pellets eaten (committed totals)
+var _eatenPending=[];           // local unsaved increments, folded into _eaten on save (atomic delta, like currency)
+function _eatenTotal(i){ return (_eaten[i]||0)+(_eatenPending[i]||0); }
 
 // Shared pond via Firebase Realtime Database. One record at ponds/shared that both phones subscribe to.
 // Earnings/spends are committed as atomic transactions so the two clients can't clobber each other.
@@ -272,6 +315,7 @@ function applyPond(p){           // mirror the shared record into local state + 
   _births=normBirths(p.births, nducks);
   _colors=normColors(p.colors, nducks);
   _names=normNames(p.names, nducks);
+  _eaten=normEaten(p.eaten, nducks);
   setDuckCount(nducks);
   syncDuckAges();
   state.unlocked=p.unlocked||{};
@@ -280,14 +324,16 @@ function applyPond(p){           // mirror the shared record into local state + 
 function normBirths(b,n){ var out=[]; b=b||[]; for(var i=0;i<n;i++) out[i]=(typeof b[i]==='number')?b[i]:0; return out; }  // dense, length n, 0 = grown
 function normColors(c,n){ var out=[]; c=c||[]; for(var i=0;i<n;i++) out[i]=(typeof c[i]==='number'&&c[i]>=0&&c[i]<PALS.length)?c[i]:defaultDuckPal(i); return out; }   // dense; legacy ducks get a stable realistic colour
 function normNames(a,n){ var out=[]; a=a||[]; for(var i=0;i<n;i++) out[i]=(typeof a[i]==='string')?a[i].slice(0,18):''; return out; }   // dense; '' = unnamed
-function syncDuckAges(){ for(var i=0;i<state.ducks.length;i++){ var d=state.ducks[i]; d.bornAt=_births[i]||0; d.colIdx=(typeof _colors[i]==='number')?_colors[i]:defaultDuckPal(i); d.pal=PALS[d.colIdx]; d.golden=isGoldenPal(d.colIdx); d.name=_names[i]||''; } }  // keep live ducks in step with the shared lists
-function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount), names:normNames(_names,state.duckCount) }; }
+function normEaten(a,n){ var out=[]; a=a||[]; for(var i=0;i<n;i++) out[i]=(typeof a[i]==='number'&&a[i]>=0)?Math.round(a[i]):0; return out; }   // dense; 0 = never fed
+function _eatenList(n){ var out=[]; for(var i=0;i<n;i++) out[i]=_eatenTotal(i); return out; }
+function syncDuckAges(){ for(var i=0;i<state.ducks.length;i++){ var d=state.ducks[i]; d.bornAt=_births[i]||0; d.colIdx=(typeof _colors[i]==='number')?_colors[i]:defaultDuckPal(i); d.pal=PALS[d.colIdx]; d.golden=isGoldenPal(d.colIdx); d.name=_names[i]||''; d.eaten=_eatenTotal(i); } }  // keep live ducks in step with the shared lists
+function _localPond(){ return { currency:Math.round(state.currency-_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount), names:normNames(_names,state.duckCount), eaten:_eatenList(state.duckCount) }; }
 var store={
   load:function(){
     try{ var s=JSON.parse(localStorage.getItem(SAVE_KEY)||'{}');
       if(typeof s.pendingEarn==='number') _pendingEarn=s.pendingEarn;
       if(typeof s.currency==='number') state.currency=s.currency;
-      if(typeof s.ducks==='number'){ _births=normBirths(s.births, s.ducks); _colors=normColors(s.colors, s.ducks); _names=normNames(s.names, s.ducks); setDuckCount(s.ducks); syncDuckAges(); }
+      if(typeof s.ducks==='number'){ _births=normBirths(s.births, s.ducks); _colors=normColors(s.colors, s.ducks); _names=normNames(s.names, s.ducks); _eaten=normEaten(s.eaten, s.ducks); setDuckCount(s.ducks); syncDuckAges(); }
       if(s.unlocked) state.unlocked=s.unlocked;
     }catch(e){}
     this._connect();
@@ -307,8 +353,19 @@ var store={
     }catch(e){ _pondRef=null; }
   },
   save:function(){
-    if(_pondRef && _remoteReady){ var d=Math.round(_pendingEarn); if(d!==0){ _pendingEarn-=d; _pondRef.transaction(function(p){ p=p||{}; p.currency=(p.currency||0)+d; return p; }); } }
-    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount), names:normNames(_names,state.duckCount) })); }catch(e){}
+    if(_pondRef && _remoteReady){
+      var d=Math.round(_pendingEarn);
+      var pend=_eatenPending, anyEat=false; for(var ei=0;ei<pend.length;ei++){ if(pend[ei]){ anyEat=true; break; } }
+      if(d!==0 || anyEat){
+        if(d) _pendingEarn-=d;
+        var capEat=pend.slice(); _eatenPending=[];                       // capture + clear local deltas
+        for(var ci=0;ci<capEat.length;ci++) if(capEat[ci]) _eaten[ci]=(_eaten[ci]||0)+capEat[ci];   // fold into committed locally so the display holds
+        _pondRef.transaction(function(p){ p=p||{}; if(d) p.currency=(p.currency||0)+d;
+          if(anyEat){ p.eaten=normEaten(p.eaten,p.ducks||state.duckCount); for(var i=0;i<capEat.length;i++) if(capEat[i]) p.eaten[i]=(p.eaten[i]||0)+capEat[i]; }
+          return p; });
+      }
+    }
+    try{ localStorage.setItem(SAVE_KEY, JSON.stringify({ currency:Math.round(state.currency), pendingEarn:Math.round(_pendingEarn), ducks:state.duckCount, unlocked:state.unlocked||{}, births:normBirths(_births,state.duckCount), colors:normColors(_colors,state.duckCount), names:normNames(_names,state.duckCount), eaten:_eatenList(state.duckCount) })); }catch(e){}
   },
   buyDuck:function(){
     if(state.duckCount>=DUCK_LIMIT || Math.floor(state.currency)<duckCost()) return false;
@@ -451,7 +508,7 @@ function duckProps(i){ return {                                                 
 function Duck(o){
   this.x=o.x; this.y=o.y; this.pal=o.pal; this.size=o.size; this.seed=o.seed||Math.random()*6.283;
   this.prop=o.prop||{wing:1,beak:1,foot:1,head:1,tall:1}; this.golden=!!o.golden; this.sparkT=rand(0.5,1.6);
-  this.name=o.name||''; this.colIdx=(typeof o.colIdx==='number')?o.colIdx:0;
+  this.name=o.name||''; this.colIdx=(typeof o.colIdx==='number')?o.colIdx:0; this.eaten=o.eaten||0;
   this.vx=0; this.vy=0; this.facing=Math.random()<0.5?1:-1;
   this.speed=0; this.legAmt=0;
   this.walkPhase=Math.random()*6.283; this.bobPhase=Math.random()*6.283;
@@ -962,7 +1019,7 @@ function makeDuckAt(i){
   var y=clamp(groundTop+(H-groundTop)*(0.30+0.62*((i*0.381966+0.13)%1)),groundTop+30,H-30);
   var size=0.88+((i*0.27+0.1)%1)*0.22;
   var ci=(typeof _colors[i]==='number')?_colors[i]:defaultDuckPal(i);
-  return new Duck({x:x,y:y,pal:PALS[ci],size:size,seed:rand(0,6.283),bornAt:_births[i]||0,prop:duckProps(i),golden:isGoldenPal(ci),colIdx:ci,name:_names[i]||''});
+  return new Duck({x:x,y:y,pal:PALS[ci],size:size,seed:rand(0,6.283),bornAt:_births[i]||0,prop:duckProps(i),golden:isGoldenPal(ci),colIdx:ci,name:_names[i]||'',eaten:_eatenTotal(i)});
 }
 function initDucks(){ state.ducks=[]; for(var i=0;i<state.duckCount;i++) state.ducks.push(makeDuckAt(i)); }
 function setDuckCount(n){   // grow/shrink the flock to match the (shared) purchased count, leaving existing ducks be
@@ -987,7 +1044,8 @@ function eatPellet(pe,duck){
   for(var k=0;k<4;k++) spawnCrumb(pe.x,pe.y-2);
   if(Math.random()<0.28) spawnHeart(duck.x,duck.y-30*depthScale(duck.y));
   if(pe.inWater) spawnRipple(pe.x,pe.y,16);
-  addCurrency(EARN_PER_PELLET);   // earn only when a duck actually eats
+  addCurrency(duck.golden ? GOLD_EARN_PER_PELLET : EARN_PER_PELLET);   // golden ducks pay out 10x
+  var di=state.ducks.indexOf(duck); if(di>=0){ _eatenPending[di]=(_eatenPending[di]||0)+1; duck.eaten=(duck.eaten||0)+1; }   // tally this duck's dinner
   audio.nom();
 }
 function spawnCrumb(x,y){ state.particles.push({type:'crumb',x:x,y:y,vx:rand(-44,44),vy:rand(-60,-26),r:rand(0.9,1.8),t:0,life:rand(0.45,0.8)}); }
@@ -3214,13 +3272,47 @@ function closeDuckCard(){ duckModal.classList.remove('open'); editingDuck=null; 
 function saveDuckName(){
   if(editingDuck){ var idx=state.ducks.indexOf(editingDuck);
     if(idx>=0){ store.setDuckName(idx, duckNameInput.value.trim()); state.namePop={duck:editingDuck,t:0}; } }
-  closeDuckCard();
+  closeDuckCard(); refreshRosterIfOpen();
 }
 document.getElementById('duckSave').addEventListener('click',function(e){ e.stopPropagation(); saveDuckName(); });
-document.getElementById('duckCloseBtn').addEventListener('click',function(e){ e.stopPropagation(); closeDuckCard(); });
+document.getElementById('duckCloseBtn').addEventListener('click',function(e){ e.stopPropagation(); closeDuckCard(); refreshRosterIfOpen(); });
 duckNameInput.addEventListener('keydown',function(e){ if(e.key==='Enter'){ e.preventDefault(); saveDuckName(); } });
-duckModal.addEventListener('click',function(e){ if(e.target===duckModal) closeDuckCard(); });
+duckModal.addEventListener('click',function(e){ if(e.target===duckModal){ closeDuckCard(); refreshRosterIfOpen(); } });
 duckModal.addEventListener('pointerdown',function(e){ e.stopPropagation(); });
+
+// ----- Flock roster -----
+function drawDuckPortrait(ctx,duck,w,h){
+  var keys=['x','y','facing','state','swimming','headDip','leanCur','bobCur','hop','wingFlap','blink','drowsy','pattering','legAmt'], bk={};
+  keys.forEach(function(k){ bk[k]=duck[k]; });
+  duck.x=0; duck.y=0; duck.facing=1; duck.state='wander'; duck.swimming=false; duck.headDip=0; duck.leanCur=0.04; duck.bobCur=0; duck.hop=0; duck.wingFlap=0; duck.blink=0; duck.drowsy=0; duck.pattering=false; duck.legAmt=0;
+  ctx.clearRect(0,0,w,h);
+  ctx.save(); ctx.translate(w/2,h-3); ctx.scale(0.6,0.6); duck.draw(ctx); ctx.restore();
+  keys.forEach(function(k){ duck[k]=bk[k]; });
+}
+function buildRoster(){
+  rosterList.innerHTML='';
+  document.getElementById('rosterSub').textContent = state.ducks.length+(state.ducks.length===1?' duck in the pond':' ducks in the pond');
+  var DPR2=Math.min(window.devicePixelRatio||1,2), cw=46, ch=54;
+  for(var i=0;i<state.ducks.length;i++){ (function(d){
+    var row=document.createElement('div'); row.className='rosterRow';
+    var c=document.createElement('canvas'); c.width=cw*DPR2; c.height=ch*DPR2; c.style.width=cw+'px'; c.style.height=ch+'px';
+    var cg=c.getContext('2d'); cg.setTransform(DPR2,0,0,DPR2,0,0); try{ drawDuckPortrait(cg,d,cw,ch); }catch(e){}
+    var info=document.createElement('div'); info.className='info';
+    var nm=document.createElement('div'); nm.className='rn'+(d.name?'':' unnamed'); nm.textContent=d.name||'Unnamed duck';
+    var sub=document.createElement('div'); sub.className='rsub'; sub.textContent=breedLabel(d.colIdx)+' · '+hatchedAgo(d.bornAt)+' · '+(d.eaten||0)+' pellet'+((d.eaten||0)===1?'':'s')+' eaten';
+    info.appendChild(nm); info.appendChild(sub);
+    var btn=document.createElement('button'); btn.textContent=d.name?'Rename':'Name';
+    btn.addEventListener('click',function(e){ e.stopPropagation(); openDuckCard(d); });
+    row.appendChild(c); row.appendChild(info); row.appendChild(btn); rosterList.appendChild(row);
+  })(state.ducks[i]); }
+}
+function openRoster(){ buildRoster(); rosterModal.classList.add('open'); }
+function closeRoster(){ rosterModal.classList.remove('open'); }
+function refreshRosterIfOpen(){ if(rosterModal && rosterModal.classList.contains('open')) buildRoster(); }
+rosterBtn.addEventListener('click',function(e){ e.stopPropagation(); hideHint(); openRoster(); });
+document.getElementById('rosterClose').addEventListener('click',function(e){ e.stopPropagation(); closeRoster(); });
+rosterModal.addEventListener('click',function(e){ if(e.target===rosterModal) closeRoster(); });
+rosterModal.addEventListener('pointerdown',function(e){ e.stopPropagation(); });
 
 // ---------- loop ----------
 function frame(now){
