@@ -94,7 +94,9 @@
   .rosterRow canvas{width:46px;height:54px;flex:none;}
   .rosterRow .info{flex:1 1 auto;min-width:0;text-align:left;}
   .rosterRow .rn{color:#2c5450;font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .rosterRow .rn.unnamed{color:rgba(44,84,80,.45);font-style:italic;font-weight:500;}
+  .rosterRow .rn.unnamed{color:#5ba0a8;font-style:italic;font-weight:600;}
+  .rosterRow.tappable{cursor:pointer;}
+  .rosterRow.tappable:active{background:rgba(143,200,198,.30);}
   .rosterRow .rsub{color:rgba(44,84,80,.6);font-size:11px;margin-top:1px;}
   .rosterRow button{flex:none;border:none;border-radius:999px;padding:7px 12px;font-family:inherit;font-weight:700;font-size:12px;background:#5ba0a8;color:#fff;cursor:pointer;}
   .rosterRow button:active{transform:scale(.95);background:#4d8c93;}
@@ -136,7 +138,7 @@
   #shopVisitors::-webkit-scrollbar{width:6px;}
   #shopVisitors::-webkit-scrollbar-thumb{background:rgba(91,160,168,.5);border-radius:999px;}
   #shopVisitors::-webkit-scrollbar-track{background:transparent;}
-  #shopClose{
+  #shopClose, #rosterClose{
     margin-top:13px;border:none;background:none;color:rgba(44,84,80,.6);
     font-family:inherit;font-weight:600;font-size:13px;cursor:pointer;padding:6px;
   }
@@ -158,6 +160,7 @@
     padding:11px 13px;font-family:inherit;font-size:15px;color:#2c5450;text-align:center;outline:none;background:rgba(143,200,198,.10);
   }
   #duckName:focus{border-color:#5ba0a8;}
+  #duckNameStatic{display:none;color:#2c5450;font-weight:700;font-size:18px;padding:4px 0 2px;}
   #duckBtns{display:flex;gap:10px;margin-top:14px;}
   #duckSave{flex:1;border:none;border-radius:999px;padding:10px;font-family:inherit;font-weight:700;font-size:14px;background:#5ba0a8;color:#fff;cursor:pointer;}
   #duckSave:active{transform:scale(.97);background:#4d8c93;}
@@ -220,6 +223,7 @@
       <div id="duckCard">
         <div id="duckTitle"><span id="duckSwatch"></span><span id="duckBreed">Duck</span></div>
         <p id="duckAge" class="sub">hatched just now</p>
+        <div id="duckNameStatic"></div>
         <input id="duckName" type="text" maxlength="18" placeholder="Name this duck" autocomplete="off" />
         <div id="duckBtns">
           <button id="duckSave">Save</button>
@@ -3263,10 +3267,17 @@ function openDuckCard(d){
   document.getElementById('duckBreed').textContent=breedLabel(d.colIdx);
   document.getElementById('duckSwatch').style.background=(d.pal&&d.pal.body)||'#f4efe6';
   document.getElementById('duckAge').textContent=hatchedAgo(d.bornAt);
-  duckNameInput.value=d.name||'';
+  var stat=document.getElementById('duckNameStatic'), save=document.getElementById('duckSave');
+  if(d.name){   // already named — show it, no renaming (a duck shouldn't get confused)
+    stat.textContent=d.name; stat.style.display='block';
+    duckNameInput.style.display='none'; save.style.display='none';
+  } else {      // unnamed — offer a text box to christen it
+    stat.style.display='none';
+    duckNameInput.style.display=''; duckNameInput.value=''; save.style.display='';
+  }
   duckModal.classList.add('open');
   state.namePop={duck:d,t:0};   // float the tag above it too
-  setTimeout(function(){ try{ duckNameInput.focus(); }catch(e){} },50);
+  if(!d.name) setTimeout(function(){ try{ duckNameInput.focus(); }catch(e){} },50);
 }
 function closeDuckCard(){ duckModal.classList.remove('open'); editingDuck=null; }
 function saveDuckName(){
@@ -3298,12 +3309,12 @@ function buildRoster(){
     var c=document.createElement('canvas'); c.width=cw*DPR2; c.height=ch*DPR2; c.style.width=cw+'px'; c.style.height=ch+'px';
     var cg=c.getContext('2d'); cg.setTransform(DPR2,0,0,DPR2,0,0); try{ drawDuckPortrait(cg,d,cw,ch); }catch(e){}
     var info=document.createElement('div'); info.className='info';
-    var nm=document.createElement('div'); nm.className='rn'+(d.name?'':' unnamed'); nm.textContent=d.name||'Unnamed duck';
+    var nm=document.createElement('div'); nm.className='rn'+(d.name?'':' unnamed'); nm.textContent=d.name||'Tap to name this duck';
     var sub=document.createElement('div'); sub.className='rsub'; sub.textContent=breedLabel(d.colIdx)+' · '+hatchedAgo(d.bornAt)+' · '+(d.eaten||0)+' pellet'+((d.eaten||0)===1?'':'s')+' eaten';
     info.appendChild(nm); info.appendChild(sub);
-    var btn=document.createElement('button'); btn.textContent=d.name?'Rename':'Name';
-    btn.addEventListener('click',function(e){ e.stopPropagation(); openDuckCard(d); });
-    row.appendChild(c); row.appendChild(info); row.appendChild(btn); rosterList.appendChild(row);
+    row.appendChild(c); row.appendChild(info);
+    if(!d.name){ row.classList.add('tappable'); row.addEventListener('click',function(e){ e.stopPropagation(); openDuckCard(d); }); }   // click an unnamed duck to name it
+    rosterList.appendChild(row);
   })(state.ducks[i]); }
 }
 function openRoster(){ buildRoster(); rosterModal.classList.add('open'); }
